@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PetAgent Control UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-row">
+          <div class="brand-mark">PA</div>
+          <div>
+            <div class="eyebrow">控制</div>
+            <h1>PetAgent</h1>
+          </div>
+        </div>
+        <div class="live-indicator">
+          <span class="live-dot" id="liveDot"></span>
+          <span id="liveStatus">offline</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-label">聊天</div>
+          <button class="nav-item active" type="button">聊天</button>
+        </div>
+        <div class="nav-section">
+          <div class="nav-label">控制</div>
+          <button class="nav-item" type="button">概览</button>
+          <button class="nav-item" type="button">会话</button>
+          <button class="nav-item" type="button">使用情况</button>
+        </div>
+      </nav>
+
+      <section class="session-rail">
+        <div class="section-heading">
+          <span>会话</span>
+          <button class="mini-btn" id="refreshButton" type="button">刷新</button>
+        </div>
+        <div class="session-list" id="sessionList"></div>
+      </section>
+
+      <footer class="sidebar-footer">
+        <span class="version-pill">workspace</span>
+        <span class="home-root" id="homeRoot">~/.PetAgent</span>
+      </footer>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span class="crumb">OpenClaw</span>
+          <span class="crumb-sep">›</span>
+          <span class="crumb active">聊天</span>
+        </div>
+        <div class="topbar-actions">
+          <span class="chip" id="gatewayAddress">http://127.0.0.1:18889</span>
+          <button class="icon-btn" id="resetButton" type="button" title="Reset Session">↻</button>
+          <button class="icon-btn danger" id="endButton" type="button" title="End Session">✦</button>
+        </div>
+      </header>
+
+      <section class="control-row">
+        <label class="control-field">
+          <span>Session</span>
+          <div class="readonly-pill" id="activeSession">-</div>
+        </label>
+        <label class="control-field">
+          <span>Primary Model</span>
+          <select id="primaryModel"></select>
+        </label>
+        <label class="control-field">
+          <span>Fallbacks</span>
+          <select id="fallbackModels" multiple size="1"></select>
+        </label>
+        <label class="control-field compact">
+          <span>Runtime</span>
+          <div class="runtime-meta">
+            <strong id="activeModel">-</strong>
+            <small id="tokenUsage">0 / 0</small>
+          </div>
+        </label>
+        <div class="control-actions">
+          <button class="primary-btn" id="saveRouteButton" type="button">保存路由</button>
+        </div>
+      </section>
+
+      <section class="budget-row">
+        <div class="budget-track"><span id="budgetFill"></span></div>
+        <span class="budget-label" id="chatSessionKey">-</span>
+      </section>
+
+      <section class="conversation-shell">
+        <div class="chat-stage">
+          <div class="chat-log" id="chatLog"></div>
+          <div class="thinking-strip" id="thinkingStrip">
+            <span class="thinking-pulse"></span>
+            <span id="thinkingLabel">等待输入…</span>
+          </div>
+        </div>
+
+        <div class="composer-shell">
+          <div class="composer-toolbar">
+            <span>Message</span>
+            <span class="composer-hint">Cmd/Ctrl + Enter 发送</span>
+          </div>
+          <div class="composer">
+            <textarea id="messageInput" placeholder="输入宠物健康问题、业务任务或调试指令…"></textarea>
+            <button class="send-btn" id="sendButton" type="button">发送</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
