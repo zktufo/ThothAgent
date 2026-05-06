@@ -112,15 +112,15 @@ npm run typecheck
 npm run memory:test
 ```
 
-## GitHub About
+## Star History
 
-Suggested description:
-
-`Self-improving domain agents with layered memory, adaptive retrieval, and session-aware orchestration.`
-
-Suggested topics:
-
-`agent-framework`, `vertical-ai`, `memory`, `retrieval`, `session-management`, `tool-use`, `self-improving`, `typescript`
+<a href="https://www.star-history.com/?repos=zktufo%2FThothAgent&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=zktufo/ThothAgent&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=zktufo/ThothAgent&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zktufo/ThothAgent&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 
