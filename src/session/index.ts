@@ -5,3 +5,4 @@ export * from "./SessionSearch.js";
 export * from "./SQLiteSessionStore.js";
 export * from "./SessionCompressor.js";
 export * from "./SessionManager.js";
+export * from "./Archiver.js";

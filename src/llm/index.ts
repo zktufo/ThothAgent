@@ -414,7 +414,7 @@ export function createDefaultProviders() {
 }
 
 function loadProviderSettings(keys: string[], defaults: ProviderSettings): ProviderSettings {
-  const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json");
+  const configPath = path.join(os.homedir(), ".PetAgent", "PetAgent.json");
   let loaded = { ...defaults };
 
   try {

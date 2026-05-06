@@ -14,6 +14,8 @@ export interface GatewayStreamEvent {
   payload: Record<string, unknown>;
 }
 
+export type GatewayConnectionState = "connected" | "disconnected";
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -33,7 +35,12 @@ export class GatewayCliClient {
   constructor(
     private readonly url: string,
     private readonly onEvent?: (event: GatewayStreamEvent) => void,
+    private readonly onConnectionStateChange?: (state: GatewayConnectionState) => void,
   ) {}
+
+  get isConnected() {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
 
   async connect(timeoutMs: number = 1200) {
     if (this.ws?.readyState === WebSocket.OPEN) return;
@@ -49,24 +56,30 @@ export class GatewayCliClient {
       ws.on("open", () => {
         clearTimeout(timer);
         this.ws = ws;
+        this.onConnectionStateChange?.("connected");
         resolve();
       });
 
       ws.on("message", (raw) => this.handleMessage(raw.toString()));
       ws.on("error", (error) => {
         clearTimeout(timer);
+        this.onConnectionStateChange?.("disconnected");
         reject(error);
       });
 
       ws.on("close", () => {
+        this.rejectPending(new Error("gateway connection closed"));
         this.ws = null;
+        this.onConnectionStateChange?.("disconnected");
       });
     });
   }
 
   close() {
+    this.rejectPending(new Error("gateway client closed"));
     try { this.ws?.close(); } catch {}
     this.ws = null;
+    this.onConnectionStateChange?.("disconnected");
   }
 
   async request<T = unknown>(method: string, params: Record<string, unknown> = {}) {
@@ -108,6 +121,13 @@ export class GatewayCliClient {
 
     if (message.type === "event") {
       this.onEvent?.(message);
+    }
+  }
+
+  private rejectPending(error: Error) {
+    for (const [id, pending] of this.pending.entries()) {
+      this.pending.delete(id);
+      pending.reject(error);
     }
   }
 }

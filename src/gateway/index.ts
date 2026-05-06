@@ -10,10 +10,19 @@
 import http from "http";
 import fs from "fs";
 import path from "path";
+import { spawn, type ChildProcess } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { PetAgent } from "../agent/index.js";
 import { ensureUserHomeReady, type UserHomePaths } from "../home/index.js";
+import { MemoryStore } from "../memory/index.js";
 import { ModelManager } from "../model_manager/index.js";
+import {
+  Logger,
+  MaintenanceCoordinator,
+  MetricsRegistry,
+  Scheduler,
+  TraceManager,
+} from "../infra/index.js";
 
 export interface GatewayConfig {
   port: number;
@@ -25,6 +34,7 @@ interface GatewayClient {
   ws: WebSocket;
   id: string;
   connectedAt: number;
+  agentId: string;
 }
 
 interface GatewayRequest {
@@ -58,12 +68,53 @@ export class PetGateway {
   readonly clients = new Map<string, GatewayClient>();
   readonly homePaths: UserHomePaths;
   readonly modelManager: ModelManager;
+  readonly logger: Logger;
+  readonly metrics: MetricsRegistry;
+  readonly tracer: TraceManager;
+  readonly scheduler: Scheduler;
+  readonly maintenance: MaintenanceCoordinator;
   agents = new Map<string, PetAgent>();
+
+  // ── 外挂 RAG 服务进程 ──
+  #ragProcess: ChildProcess | null = null;
+  readonly RAG_PORT = 8000;
+  readonly RAG_SCRIPT = path.resolve(process.env.HOME || "/Users/qiaoqiaozhang", ".openclaw/workspace-qiaobao/agentic_rag_demo.py");
+  readonly RAG_VENV = path.resolve(process.env.HOME || "/Users/qiaoqiaozhang", ".openclaw/workspace-qiaobao/venv_rag");
 
   private constructor(config: GatewayConfig, homePaths: UserHomePaths) {
     this.config = config;
     this.homePaths = homePaths;
     this.modelManager = new ModelManager({ homePaths });
+    this.logger = new Logger({
+      service: "pet-gateway",
+      level: process.env.PET_AGENT_LOG_LEVEL === "debug" ? "debug" : "info",
+      bindings: {
+        host: config.host,
+        port: config.port,
+      },
+    });
+    this.metrics = new MetricsRegistry();
+    this.tracer = new TraceManager(this.logger, this.metrics);
+    this.scheduler = new Scheduler({
+      logger: this.logger,
+      metrics: this.metrics,
+      tracer: this.tracer,
+    });
+    this.maintenance = new MaintenanceCoordinator({
+      logger: this.logger,
+      metrics: this.metrics,
+      scheduler: this.scheduler,
+      tracer: this.tracer,
+      listAgents: () => {
+        const defaultAgentId = this.defaultAgentId();
+        const entries: Array<[string, PetAgent]> = [
+          [defaultAgentId, this.getOrCreateAgent(defaultAgentId)],
+          ...[...this.agents.entries()],
+        ];
+        const deduped = new Map<string, PetAgent>(entries);
+        return [...deduped.entries()].map(([agentId, agent]) => ({ agentId, agent }));
+      },
+    });
 
     // HTTP 服务器
     this.httpServer = http.createServer((req, res) => this.handleHttp(req, res));
@@ -71,6 +122,9 @@ export class PetGateway {
     // WebSocket 服务器
     this.wss = new WebSocketServer({ server: this.httpServer });
     this.wss.on("connection", (ws, req) => this.handleConnection(ws, req));
+    this.wss.on("error", (error) => {
+      this.logger.error("gateway.websocket_server_error", error);
+    });
   }
 
   static async create(config: Partial<GatewayConfig> = {}): Promise<PetGateway> {
@@ -83,25 +137,99 @@ export class PetGateway {
   }
 
   start(): void {
+    this.#startRag();
+    this.scheduler.start();
     this.httpServer.listen(this.config.port, this.config.host, () => {
       this.log("startup", `http://${this.config.host}:${this.config.port}`);
-      console.log(`🐶 Pet-Gateway running on http://${this.config.host}:${this.config.port}`);
-      console.log(`   WebSocket: ws://${this.config.host}:${this.config.port}`);
-      console.log(`   WebUI:     http://${this.config.host}:${this.config.port}`);
-      console.log(`   Health:    http://${this.config.host}:${this.config.port}/health`);
+      this.logger.info("gateway.listening", {
+        httpUrl: `http://${this.config.host}:${this.config.port}`,
+        wsUrl: `ws://${this.config.host}:${this.config.port}`,
+        staticDir: this.config.staticDir || "",
+      });
     });
   }
 
   stop(): void {
+    this.#stopRag();
+    this.scheduler.stop();
     this.wss.close();
     this.httpServer.close();
+  }
+
+  // ── 本地 RAG 服务生命周期 ──────────────────────────────
+
+  #startRag(): void {
+    if (!fs.existsSync(this.RAG_SCRIPT)) {
+      this.logger.warn("rag.script_not_found", { path: this.RAG_SCRIPT });
+      this.log("rag", "跳过 — agentic_rag_demo.py 不存在");
+      return;
+    }
+
+    const pythonBin = path.join(this.RAG_VENV, "bin", "python3");
+    if (!fs.existsSync(pythonBin)) {
+      this.logger.warn("rag.venv_not_found", { path: pythonBin });
+      this.log("rag", "跳过 — venv 未找到");
+      return;
+    }
+
+    const ragPort = parseInt(process.env.LOCAL_RAG_PORT || String(this.RAG_PORT), 10);
+    this.#ragProcess = spawn(pythonBin, [this.RAG_SCRIPT, "--api", String(ragPort)], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+
+    this.#ragProcess.stdout?.on("data", (data: Buffer) => {
+      const line = data.toString().trim();
+      if (line) this.logger.info("rag.stdout", { line: line.slice(0, 200) });
+    });
+
+    this.#ragProcess.stderr?.on("data", (data: Buffer) => {
+      const line = data.toString().trim();
+      if (line && !line.includes("Building prefix") && !line.includes("Loading weights")) {
+        this.logger.info("rag.stderr", { line: line.slice(0, 200) });
+      }
+    });
+
+    this.#ragProcess.on("exit", (code, signal) => {
+      this.logger.warn("rag.exited", { code, signal });
+      this.#ragProcess = null;
+    });
+
+    this.#ragProcess.on("error", (err) => {
+      this.logger.error("rag.spawn_error", { error: err.message });
+      this.#ragProcess = null;
+    });
+
+    this.log("rag", `RAG 服务启动中 (pid=${this.#ragProcess.pid}, port=${ragPort})...`);
+  }
+
+  #stopRag(): void {
+    if (!this.#ragProcess) return;
+    this.log("rag", "正在停止 RAG 服务...");
+    this.#ragProcess.kill("SIGTERM");
+    setTimeout(() => {
+      if (this.#ragProcess && !this.#ragProcess.killed) {
+        this.#ragProcess.kill("SIGKILL");
+      }
+    }, 5000);
+  }
+
+  // ── RAG 健康检查端点 ──
+
+  get ragReady(): boolean {
+    return this.#ragProcess !== null && !this.#ragProcess.killed;
   }
 
   // ── WebSocket ──────────────────────────────────────────
 
   private handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
     const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const client: GatewayClient = { ws, id: clientId, connectedAt: Date.now() };
+    const client: GatewayClient = {
+      ws,
+      id: clientId,
+      connectedAt: Date.now(),
+      agentId: this.defaultAgentId(),
+    };
     this.clients.set(clientId, client);
     this.log("ws.connect", `${clientId} ${req.socket.remoteAddress || "-"}`);
 
@@ -134,6 +262,7 @@ export class PetGateway {
     }
 
     this.log("ws.rpc", `${client.id} ${req.method}`);
+    client.agentId = this.resolveAgentId(req.params?.agentId);
 
     try {
       if (req.method === "agent" || req.method === "chat.send") {
@@ -174,7 +303,7 @@ export class PetGateway {
     }
 
     // 获取/创建 agent
-    const agentId = String(params.agentId || this.homePaths.agentName || "main");
+    const agentId = this.resolveAgentId(params.agentId);
     const agent = this.getOrCreateAgent(agentId);
     this.log("chat.send", `${agentId} ${input.slice(0, 80).replace(/\s+/g, " ")}`);
 
@@ -226,6 +355,7 @@ export class PetGateway {
           session,
         },
       });
+      this.broadcastSessionUpdated(agentId, session.id, session.sessionKey, client.id);
 
     } catch (error: any) {
       this.log("chat.error", `${runId} ${String(error?.message || error)}`);
@@ -296,7 +426,30 @@ export class PetGateway {
     }
 
     if (url.pathname === "/health") {
-      this.sendJson(res, 200, { status: "ok", uptime: process.uptime(), clients: this.clients.size });
+      this.sendJson(res, 200, {
+        status: "ok",
+        uptime: process.uptime(),
+        clients: this.clients.size,
+        rag: this.ragReady ? "running" : "stopped",
+      });
+      return;
+    }
+
+    if (url.pathname === "/health/rag") {
+      if (!this.ragReady) {
+        this.sendJson(res, 503, { status: "rag_stopped" });
+        return;
+      }
+      const ragPort = parseInt(process.env.LOCAL_RAG_PORT || String(this.RAG_PORT), 10);
+      http.get(`http://127.0.0.1:${ragPort}/health`, (ragRes) => {
+        let body = "";
+        ragRes.on("data", (chunk) => body += chunk);
+        ragRes.on("end", () => {
+          this.sendJson(res, 200, JSON.parse(body));
+        });
+      }).on("error", () => {
+        this.sendJson(res, 503, { status: "rag_unreachable" });
+      });
       return;
     }
 
@@ -327,7 +480,12 @@ export class PetGateway {
           ".svg": "image/svg+xml",
           ".ico": "image/x-icon",
         };
-        res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream" });
+        res.writeHead(200, {
+          "Content-Type": mime[ext] || "application/octet-stream",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+        });
         res.end(fs.readFileSync(candidate));
         return;
       }
@@ -345,15 +503,70 @@ export class PetGateway {
     }
   }
 
+  private broadcast(payload: GatewayEvent, predicate?: (client: GatewayClient) => boolean): void {
+    for (const client of this.clients.values()) {
+      if (predicate && !predicate(client)) continue;
+      this.send(client, payload);
+    }
+  }
+
+  private broadcastSessionUpdated(agentId: string, sessionId: string, sessionKey: string, excludeClientId?: string): void {
+    const broadcastPlain = () => {
+      this.broadcast({
+        type: "event",
+        event: "session.updated",
+        payload: {
+          agentId,
+          sessionId,
+          sessionKey,
+          updatedAt: new Date().toISOString(),
+        },
+      }, (client) => client.agentId === agentId && client.id !== excludeClientId);
+    };
+
+    const agent = this.agents.get(this.resolveAgentId(agentId));
+    if (!agent) {
+      broadcastPlain();
+      return;
+    }
+
+    void agent.runtime.sessions.resolveSessionIndex()
+      .then((sessionIndex) => {
+        this.broadcast({
+          type: "event",
+          event: "session.updated",
+          payload: {
+            agentId,
+            sessionId,
+            sessionKey,
+            sessionIndex,
+            updatedAt: new Date().toISOString(),
+          },
+        }, (client) => client.agentId === agentId && client.id !== excludeClientId);
+      })
+      .catch(() => {
+        broadcastPlain();
+      });
+  }
+
   private sendError(client: GatewayClient, id: string, error: string): void {
     this.send(client, { id, type: "res", ok: false, error });
   }
 
   private getOrCreateAgent(agentId: string) {
-    if (!this.agents.has(agentId)) {
-      this.agents.set(agentId, new PetAgent({}));
+    const resolvedAgentId = this.resolveAgentId(agentId);
+    if (!this.agents.has(resolvedAgentId)) {
+      const homePaths = resolvedAgentId === this.defaultAgentId()
+        ? this.homePaths
+        : {
+          ...this.homePaths,
+          ...ensureRuntimeHomePaths(resolvedAgentId, this.homePaths.homeRoot),
+        };
+      this.agents.set(resolvedAgentId, new PetAgent({
+        memory: new MemoryStore({ homePaths }),
+      }));
     }
-    return this.agents.get(agentId)!;
+    return this.agents.get(resolvedAgentId)!;
   }
 
   private async handleHttpAgent(params: GatewayJsonBody, res: http.ServerResponse) {
@@ -362,7 +575,7 @@ export class PetGateway {
       this.sendJson(res, 400, { error: "message required" });
       return;
     }
-    const agentId = String(params.agentId || this.homePaths.agentName || "main");
+    const agentId = this.resolveAgentId(params.agentId);
     const agent = this.getOrCreateAgent(agentId);
     const result = await agent.thinkWithTrace(input);
     this.sendJson(res, 200, {
@@ -387,11 +600,12 @@ export class PetGateway {
   }
 
   private async handleResetSession(params: GatewayJsonBody, res: http.ServerResponse) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const agent = this.getOrCreateAgent(agentId);
-    const reset = await agent.runtime.sessions.resetCurrentSession("Gateway 重置的新会话");
+    const reset = await agent.runtime.sessions.resetCurrentSession(agentId);
     await agent.memory.clearSession();
     this.log("sessions.reset", `${agentId} -> ${reset.next.sessionKey}`);
+    this.broadcastSessionUpdated(agentId, reset.next.id, reset.next.sessionKey);
     this.sendJson(res, 200, {
       ok: true,
       previous: reset.ended?.session || null,
@@ -400,14 +614,15 @@ export class PetGateway {
   }
 
   private async handleEndSession(params: GatewayJsonBody, res: http.ServerResponse) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const agent = this.getOrCreateAgent(agentId);
     const extraction = await agent.runtime.endCurrentBusinessSession();
-    const next = await agent.runtime.sessions.createChildSession("Gateway 结束后的新会话", {
+    const next = await agent.runtime.sessions.createChildSession(agentId, {
       startedAfterEnd: extraction?.session.id || null,
     });
     await agent.memory.clearSession();
     this.log("sessions.end", `${agentId} -> ${next.sessionKey}`);
+    this.broadcastSessionUpdated(agentId, next.id, next.sessionKey);
     this.sendJson(res, 200, {
       ok: true,
       ended: extraction?.session || null,
@@ -417,7 +632,7 @@ export class PetGateway {
   }
 
   private async handleModelRoute(params: GatewayJsonBody, res: http.ServerResponse) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const primary = String(params.primary || "");
     const fallbacks = Array.isArray(params.fallbacks)
       ? params.fallbacks.map((item) => String(item)).filter(Boolean)
@@ -438,9 +653,10 @@ export class PetGateway {
   }
 
   private async buildStatusPayload() {
-    const agentId = this.homePaths.agentName || "default";
+    const agentId = this.defaultAgentId();
     const agent = this.getOrCreateAgent(agentId);
     const session = await agent.runtime.sessions.getCurrentSession();
+    const sessionIndex = await agent.runtime.sessions.resolveSessionIndex();
     const currentModel = this.modelManager.getAgentModelConfig(agentId);
     return {
       status: "ok",
@@ -455,6 +671,7 @@ export class PetGateway {
         agentId,
         sessionKey: session.sessionKey,
         sessionId: session.id,
+        sessionIndex,
         modelRoute: currentModel,
         activeModel: agent.runtime.lastProviderLabel,
         tokenUsage: {
@@ -469,11 +686,15 @@ export class PetGateway {
         workspaceDir: this.homePaths.workspaceDir,
         configPath: this.homePaths.petAgentConfigPath,
       },
+      observability: {
+        scheduler: this.scheduler.getSnapshot(),
+        metrics: this.metrics.snapshot(),
+      },
     };
   }
 
   private async buildModelsPayload() {
-    const agentId = this.homePaths.agentName || "default";
+    const agentId = this.defaultAgentId();
     return {
       current: this.modelManager.getAgentModelConfig(agentId),
       items: this.modelManager.listModels(),
@@ -481,13 +702,15 @@ export class PetGateway {
   }
 
   private async buildSessionsPayload(params: GatewayJsonBody) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const limit = typeof params.limit === "number" ? params.limit : 20;
     const agent = this.getOrCreateAgent(agentId);
+    const sessionIndex = await agent.runtime.sessions.resolveSessionIndex();
     const sessions = await agent.runtime.sessions.listSessions({ limit, status: "all" });
     const items = await Promise.all(
       sessions.map(async (session) => ({
         ...session,
+        title: this.normalizeSessionTitle(session.title, agentId),
         summary: await agent.runtime.sessions.loadSessionSummary(session.id),
         actions: await agent.runtime.sessions.listSessionActions(session.id),
       })),
@@ -495,11 +718,12 @@ export class PetGateway {
     return {
       items,
       currentSessionId: await agent.runtime.sessions.getCurrentSessionId(),
+      sessionIndex,
     };
   }
 
   private async resolveSessionPayload(params: GatewayJsonBody) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const agent = this.getOrCreateAgent(agentId);
     const session = await agent.runtime.sessions.resolveSession({
       sessionId: typeof params.sessionId === "string" ? params.sessionId : undefined,
@@ -515,42 +739,56 @@ export class PetGateway {
   }
 
   private async buildChatHistoryPayload(params: GatewayJsonBody) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const limit = typeof params.limit === "number" ? params.limit : 60;
     const agent = this.getOrCreateAgent(agentId);
+    const sessionIndex = await agent.runtime.sessions.resolveSessionIndex();
     const session = await agent.runtime.sessions.resolveSession({
       sessionId: typeof params.sessionId === "string" ? params.sessionId : undefined,
       sessionKey: typeof params.sessionKey === "string" ? params.sessionKey : undefined,
     });
     if (!session) {
-      return { session: null, summary: null, messages: [] };
+      return { session: null, sessionIndex, summary: null, messages: [] };
     }
     return {
-      session,
+      session: {
+        ...session,
+        title: this.normalizeSessionTitle(session.title, agentId),
+      },
+      sessionIndex,
       summary: await agent.runtime.sessions.loadSessionSummary(session.id),
       messages: await agent.runtime.sessions.loadHistory(session.id, limit),
     };
   }
 
+  private normalizeSessionTitle(title: string, agentId: string) {
+    const normalized = String(title || "").trim();
+    if (!normalized) return agentId;
+    if (/^(新会话|hi|hello|你好)$/i.test(normalized)) return agentId;
+    return normalized;
+  }
+
   private async patchSessionPayload(params: GatewayJsonBody) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const action = String(params.action || "").trim();
     const agent = this.getOrCreateAgent(agentId);
 
     if (action === "reset") {
-      const reset = await agent.runtime.sessions.resetCurrentSession(String(params.title || "Gateway 重置的新会话"));
+      const reset = await agent.runtime.sessions.resetCurrentSession(String(params.title || agentId));
       await agent.memory.clearSession();
       this.log("sessions.patch", `${agentId} reset -> ${reset.next.sessionKey}`);
+      this.broadcastSessionUpdated(agentId, reset.next.id, reset.next.sessionKey);
       return { ok: true, action, previous: reset.ended?.session || null, next: reset.next };
     }
 
     if (action === "end") {
       const extraction = await agent.runtime.endCurrentBusinessSession();
-      const next = await agent.runtime.sessions.createChildSession(String(params.title || "Gateway 结束后的新会话"), {
+      const next = await agent.runtime.sessions.createChildSession(String(params.title || agentId), {
         startedAfterEnd: extraction?.session.id || null,
       });
       await agent.memory.clearSession();
       this.log("sessions.patch", `${agentId} end -> ${next.sessionKey}`);
+      this.broadcastSessionUpdated(agentId, next.id, next.sessionKey);
       return { ok: true, action, ended: extraction?.session || null, summary: extraction?.summaryMarkdown || "", next };
     }
 
@@ -558,7 +796,7 @@ export class PetGateway {
   }
 
   private async patchModelRoutePayload(params: GatewayJsonBody) {
-    const agentId = String(params.agentId || this.homePaths.agentName || "default");
+    const agentId = this.resolveAgentId(params.agentId);
     const primary = String(params.primary || "");
     const fallbacks = Array.isArray(params.fallbacks)
       ? params.fallbacks.map((item) => String(item)).filter(Boolean)
@@ -595,7 +833,55 @@ export class PetGateway {
   }
 
   private log(scope: string, message: string) {
-    const stamp = new Date().toISOString().slice(11, 19);
-    console.log(`[gateway ${stamp}] ${scope} ${message}`);
+    this.logger.info("gateway.event", {
+      scope,
+      message,
+    });
   }
+
+  private defaultAgentId() {
+    return this.homePaths.agentName || "main";
+  }
+
+  private resolveAgentId(value: unknown) {
+    const raw = String(value || "").trim();
+    if (!raw || raw === "main" || raw === "default" || raw === this.defaultAgentId()) {
+      return this.defaultAgentId();
+    }
+    return raw.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || this.defaultAgentId();
+  }
+}
+
+function ensureRuntimeHomePaths(agentId: string, homeRoot: string): UserHomePaths {
+  const agentRoot = path.join(homeRoot, "agents", agentId);
+  const agentDataDir = agentRoot;
+  const memoryDir = path.join(agentDataDir, "memory");
+  const layeredDir = path.join(memoryDir, "layered");
+
+  return {
+    packageRoot: path.resolve(process.cwd()),
+    homeRoot,
+    petAgentConfigPath: path.join(homeRoot, "PetAgent.json"),
+    agentName: agentId,
+    agentRoot,
+    agentDataDir,
+    sessionsDir: path.join(agentRoot, "sessions"),
+    sessionDbPath: path.join(agentRoot, "sessions", "session.sqlite"),
+    sessionIndexPath: path.join(agentRoot, "sessions", "session.json"),
+    workspaceRoot: path.join(homeRoot, "workspace"),
+    workspaceDir: path.join(homeRoot, "workspace", agentId),
+    memoryDir,
+    dailyDir: path.join(memoryDir, "daily"),
+    layeredDir,
+    daemonDir: path.join(homeRoot, "daemon"),
+    soulPath: path.join(agentDataDir, "SOUL.md"),
+    userPath: path.join(agentDataDir, "USER.md"),
+    visibleMemoryPath: path.join(agentDataDir, "MEMORY.md"),
+    domainContextPath: path.join(agentDataDir, "DOMAIN.md"),
+    agentsFilePath: path.join(homeRoot, "AGENTS.md"),
+    workingStatePath: path.join(layeredDir, "working_state.json"),
+    retrievalMemoryPath: path.join(layeredDir, "retrieval_memory.db"),
+    retrievalDbPath: path.join(layeredDir, "retrieval_memory.db"),
+    daemonManifestPath: path.join(homeRoot, "daemon", `${agentId}.json`),
+  };
 }

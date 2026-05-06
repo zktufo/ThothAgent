@@ -48,6 +48,7 @@ async function main() {
   const cssText = await staticRes.text();
 
   assert.equal(status.status, "ok");
+  assert.ok(status.observability?.scheduler);
   assert.ok(Array.isArray(models.items));
   assert.ok(Array.isArray(sessions.items));
   assert.ok(cssText.includes(".shell"));

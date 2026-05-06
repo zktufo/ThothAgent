@@ -6,18 +6,17 @@
  * - `runtime` should mean the agent scheduler/orchestrator
  * - this file only handles user-home directories, templates, and bootstrap files
  *
- * The structure is intentionally close to OpenClaw:
+ * The structure is the canonical PetAgent runtime layout:
  *   ~/.PetAgent/
+ *     AGENTS.md
  *     agents/<agentName>/
- *       agent/
- *         AGENTS.md
- *         SOUL.md
- *         USER.md
- *         MEMORY.md
- *         domain_context.md
- *         memory/
- *           daily/
- *           layered/
+ *       SOUL.md
+ *       USER.md
+ *       MEMORY.md
+ *       DOMAIN.md
+ *       memory/
+ *         daily/
+ *         layered/
  *       sessions/
  *         session.sqlite
  *     workspace/<agentName>/
@@ -35,10 +34,11 @@ export interface UserHomePaths {
   agentDataDir: string;
   sessionsDir: string;
   sessionDbPath: string;
+  sessionIndexPath: string;
   workspaceRoot: string;
   workspaceDir: string;
-  memoryDir: string;
   dailyDir: string;
+  memoryDir: string;
   layeredDir: string;
   daemonDir: string;
   soulPath: string;
@@ -46,10 +46,9 @@ export interface UserHomePaths {
   visibleMemoryPath: string;
   domainContextPath: string;
   agentsFilePath: string;
-  sessionSummaryPath: string;
-  userProfilePath: string;
   workingStatePath: string;
   retrievalMemoryPath: string;
+  retrievalDbPath: string;
   daemonManifestPath: string;
 }
 
@@ -92,11 +91,11 @@ export function resolveUserHomePaths(options: ResolveUserHomePathsOptions = {}):
     options.agentName
     || process.env.PET_AGENT_AGENT_NAME
     || process.env.PET_AGENT_USER_ID
-    || "default",
+    || "main",
   );
   const agentsRoot = path.join(homeRoot, "agents");
   const agentRoot = path.join(agentsRoot, agentName);
-  const agentDataDir = path.join(agentRoot, "agent");
+  const agentDataDir = agentRoot;
   const memoryDir = path.join(agentDataDir, "memory");
   const layeredDir = path.join(memoryDir, "layered");
 
@@ -109,6 +108,7 @@ export function resolveUserHomePaths(options: ResolveUserHomePathsOptions = {}):
     agentDataDir,
     sessionsDir: path.join(agentRoot, "sessions"),
     sessionDbPath: path.join(agentRoot, "sessions", "session.sqlite"),
+    sessionIndexPath: path.join(agentRoot, "sessions", "session.json"),
     workspaceRoot: path.join(homeRoot, "workspace"),
     workspaceDir: path.join(homeRoot, "workspace", agentName),
     memoryDir,
@@ -118,12 +118,11 @@ export function resolveUserHomePaths(options: ResolveUserHomePathsOptions = {}):
     soulPath: path.join(agentDataDir, "SOUL.md"),
     userPath: path.join(agentDataDir, "USER.md"),
     visibleMemoryPath: path.join(agentDataDir, "MEMORY.md"),
-    domainContextPath: path.join(agentDataDir, "domain_context.md"),
-    agentsFilePath: path.join(agentDataDir, "AGENTS.md"),
-    sessionSummaryPath: path.join(layeredDir, "session_summary.md"),
-    userProfilePath: path.join(layeredDir, "user_profile.json"),
+    domainContextPath: path.join(agentDataDir, "DOMAIN.md"),
+    agentsFilePath: path.join(homeRoot, "AGENTS.md"),
     workingStatePath: path.join(layeredDir, "working_state.json"),
-    retrievalMemoryPath: path.join(layeredDir, "retrieval_memory.jsonl"),
+    retrievalMemoryPath: path.join(layeredDir, "retrieval_memory.db"),
+    retrievalDbPath: path.join(layeredDir, "retrieval_memory.db"),
     daemonManifestPath: path.join(homeRoot, "daemon", `${agentName}.json`),
   };
 }
@@ -149,11 +148,8 @@ export async function onboardUserHome(options: OnboardUserHomeOptions = {}): Pro
   ensureTextFile(paths.userPath, userTemplate(), created);
   ensureTextFile(paths.visibleMemoryPath, visibleMemoryTemplate(), created);
   ensureTextFile(paths.domainContextPath, domainContextTemplate(), created);
-  ensureTextFile(path.join(paths.dailyDir, `${todayKey()}.md`), dailyTemplate(todayKey()), created);
   ensureTextFile(path.join(paths.workspaceDir, ".gitkeep"), "", created);
-  ensureJsonFile(paths.userProfilePath, defaultUserProfile(), created);
   ensureJsonFile(paths.workingStatePath, defaultWorkingState(), created);
-  ensureTextFile(paths.sessionSummaryPath, "# Session Summary\n\n- 暂无摘要。\n", created);
   ensureTextFile(paths.retrievalMemoryPath, "", created);
 
   if (options.installDaemon) {
@@ -205,31 +201,25 @@ function ensureJsonFile(filePath: string, value: unknown, created: string[]) {
 }
 
 function sanitizeSegment(value: string) {
-  return value.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
-}
-
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return value.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "main";
 }
 
 function agentsTemplate() {
   return [
     "# AGENTS.md - 毛孩子健康顾问工作台",
     "",
-    "_这是运行时用户目录中的 Agent 说明。_",
+    "_这是运行时用户目录根目录中的全局 Agent 说明。_",
     "",
     "## 每次对话开始前",
     "",
     "1. 读取 `SOUL.md`",
     "2. 读取 `MEMORY.md`",
-    "3. 检查 `memory/daily/YYYY-MM-DD.md`（不存在则创建）",
-    "",
     "## 记忆文件",
     "",
     "- `SOUL.md`：角色风格与原则",
     "- `USER.md`：当前宠物主人的资料与偏好",
     "- `MEMORY.md`：用户可见记忆摘要",
-    "- `domain_context.md`：垂直业务规则与背景",
+    "- `DOMAIN.md`：垂直业务规则与背景",
     "- `memory/layered/*`：结构化分层 memory",
     "- `sessions/session.sqlite`：原始会话、工具动作与附件",
     "",
@@ -274,15 +264,8 @@ function visibleMemoryTemplate() {
   return [
     "# MEMORY.md - 记忆摘要",
     "",
-    "> 这是面向用户可见的记忆摘要，会随着对话自动整理更新。",
+    "> 这是内置长期记忆文件。可由 agent 通过 memory 工具维护，也可由用户手动编辑。",
     "",
-    "## 用户画像",
-    "- 暂无稳定画像。",
-    "",
-    "## 当前会话摘要",
-    "- 暂无会话摘要。",
-    "",
-    "## 近期重要记忆",
     "- 暂无长期记忆。",
     "",
   ].join("\n");
@@ -290,7 +273,7 @@ function visibleMemoryTemplate() {
 
 function domainContextTemplate() {
   return [
-    "# Domain Context",
+    "# DOMAIN.md",
     "",
     "- 当前 Agent 服务于宠物健康咨询场景。",
     "- 需要优先收集宠物种类、年龄、体重、症状、持续时间和精神食欲情况。",
@@ -298,22 +281,6 @@ function domainContextTemplate() {
     "- 所有建议都应强调用药安全与观察指标。",
     "",
   ].join("\n");
-}
-
-function dailyTemplate(dateKey: string) {
-  return `# ${dateKey} 日志\n\n`;
-}
-
-function defaultUserProfile() {
-  return {
-    preferences: {
-      answerStyle: "direct",
-      responseLength: "concise",
-      formatting: ["bullet points"],
-    },
-    traits: [],
-    stableFacts: {},
-  };
 }
 
 function defaultWorkingState() {
@@ -338,6 +305,7 @@ function daemonManifest(paths: UserHomePaths) {
 }
 
 function petAgentConfigTemplate(agentName: string, workspaceDir: string) {
+  const workspaceRoot = path.dirname(workspaceDir);
   return `${JSON.stringify({
     meta: {
       version: "1.0.0",
@@ -429,13 +397,20 @@ function petAgentConfigTemplate(agentName: string, workspaceDir: string) {
         },
       },
     },
+    memory: {
+      externalProvider: {
+        kind: "local-file",
+        options: {},
+      },
+    },
     agents: {
       defaults: {
         model: {
           primary: "minimax-portal/MiniMax-M2.7",
           fallbacks: ["openai/gpt-4o-mini"],
         },
-        workspace: workspaceDir,
+        agent: "main",
+        workspace: workspaceRoot,
         compaction: {
           mode: "safeguard",
         },

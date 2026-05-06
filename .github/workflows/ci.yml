@@ -1,0 +1,18 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node dist/home/basic_test.js
+      - run: node dist/model_manager/basic_test.js
+      - run: node dist/session/basic_test.js
+      - run: node dist/runtime/basic_test.js
+      - run: node dist/memory/layered/basic_test.js

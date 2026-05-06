@@ -1,0 +1,49 @@
+{
+  "ai_overview.md": {
+    "hash": "a65e5f761fb947dbdb49039aefd0fea239f2ba1519f3e15d436829a55fd116e6",
+    "mtime": 1777994819.9826262,
+    "size": 1765,
+    "chunk_ids": [
+      "296521d2-d949-44f0-b002-7f72d6e63245",
+      "5ac021d9-40ab-4ead-bd61-2d019300f2fb",
+      "788f3370-a8ea-4735-a5c5-db5bcaf33d2b",
+      "149d7e21-ac30-41a0-b2de-353e2b0f9463",
+      "ba9bfcd9-c3b7-4f7b-8510-f193f23a2a8d",
+      "4f6cf2fc-5e7a-42b8-a2eb-50ee3f7fe896",
+      "c8614cfe-9cc3-4c3a-8df4-10a8e3a5a53e",
+      "8f14a7df-8f97-4d40-8a62-8f43373e3097"
+    ],
+    "total_chunks": 8,
+    "strategy": "markdown_header"
+  },
+  "deploy_guide.html": {
+    "hash": "302c3eb886ce5330a6104526f5bdbb25d464c072f8d7cc920632b7dd62cc676e",
+    "mtime": 1777994819.9828496,
+    "size": 952,
+    "chunk_ids": [
+      "7d9244f7-11d8-4f9b-8e7d-b1a84e02c430",
+      "26c2177a-3ee5-4f48-b3a2-8e29ec069c2c",
+      "28e88eab-69af-4ef8-a445-ea0dc8419517",
+      "2ab18f9e-def2-42e7-aefd-45959761f17c",
+      "cc141212-8768-4843-b24b-6996c3c2c87c",
+      "016a5623-4f3f-4c93-ad92-ea350a8f3988"
+    ],
+    "total_chunks": 6,
+    "strategy": "html_structured"
+  },
+  "rag_core.py": {
+    "hash": "a588718abcfd71a57e492819abdc76e5d52df97fb66308c36098a3a279d2f986",
+    "mtime": 1777994819.982748,
+    "size": 2258,
+    "chunk_ids": [
+      "fb8e0178-f989-4ee8-8b44-57a0feae8279",
+      "aaf7a363-1f59-4258-9c34-18ec30e13707",
+      "049e6eb1-e316-4862-a67c-344da45f30b2",
+      "4241cf5d-5e86-4021-aa1a-213d830c4642",
+      "fb9db9a0-7225-44a5-91b4-fd4e27e2a7b2",
+      "80062f9e-f22e-41df-831b-e6247549e6bf"
+    ],
+    "total_chunks": 6,
+    "strategy": "code_python"
+  }
+}

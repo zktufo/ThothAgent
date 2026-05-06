@@ -5,14 +5,16 @@
   "main": "dist/cli/main.js",
   "type": "module",
   "bin": {
-    "petagent": "dist/cli/main.js"
+    "petagent": "bin/petagent.js"
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/cli/main.js",
-    "dev": "tsc && node dist/cli/main.js",
+    "start": "node --disable-warning=ExperimentalWarning dist/cli/main.js",
+    "dev": "tsc && node --disable-warning=ExperimentalWarning dist/cli/main.js",
     "typecheck": "tsc --noEmit",
-    "memory:test": "npm run build && node dist/home/basic_test.js && node dist/model_manager/basic_test.js && node dist/session/basic_test.js && node dist/runtime/basic_test.js && node dist/memory/layered/basic_test.js"
+    "memory:test": "npm run build && node dist/home/basic_test.js && node dist/model_manager/basic_test.js && node dist/session/basic_test.js && node dist/runtime/basic_test.js && node dist/memory/layered/basic_test.js && node dist/infra/basic_test.js && node dist/gateway/basic_test.js",
+    "eval:memory-scale": "npm run build && node dist/evals/memory_scale_benchmark.js",
+    "eval:memory-ab": "npm run build && node dist/evals/memory_ab_test.js"
   },
   "keywords": [
     "pet",

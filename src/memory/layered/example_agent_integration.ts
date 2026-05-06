@@ -2,7 +2,7 @@ import type { LLMMessage } from "../../llm/index.js";
 import { MemoryManager } from "./manager.js";
 import { FileMemory } from "./file_memory.js";
 import { RetrievalMemory } from "./retrieval_memory.js";
-import { FileMemoryProvider, RetrievalMemoryProvider, VisibleMemorySummaryProvider } from "./providers.js";
+import { BuiltinMemoryProvider, ExternalFileMemoryProvider } from "./providers.js";
 
 export function createLayeredMemoryManager(options: {
   sessionId: string;
@@ -11,19 +11,18 @@ export function createLayeredMemoryManager(options: {
   maxMemoryTokens?: number;
 }) {
   // This helper shows the intended production wiring:
-  // one manager, one file store, one retrieval store, multiple providers.
+  // one manager, one built-in file store, one external file provider.
   const fileMemory = new FileMemory({
     rootDir: options.rootDir,
   });
   const retrievalMemory = new RetrievalMemory({
-    filePath: options.rootDir ? `${options.rootDir}/retrieval_memory.jsonl` : undefined,
-    topK: 4,
+    jsonlPath: fileMemory.retrievalMemoryPath,
+    dbPath: fileMemory.retrievalMemoryPath,
   });
 
   return new MemoryManager([
-    new FileMemoryProvider(fileMemory),
-    new RetrievalMemoryProvider(retrievalMemory, 4),
-    new VisibleMemorySummaryProvider(fileMemory, retrievalMemory),
+    new BuiltinMemoryProvider(fileMemory),
+    new ExternalFileMemoryProvider(fileMemory, retrievalMemory),
   ], {
     sessionId: options.sessionId,
     debug: options.debug,

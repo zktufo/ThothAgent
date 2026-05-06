@@ -4,7 +4,6 @@ import type { MemoryContextBlock, MemorySnapshot, PromptBuildInput, PromptBuildO
 const PRIORITY_ORDER: Record<string, number> = {
   user_profile: 100,
   domain_context: 80,
-  session_summary: 60,
   retrieval: 40,
 };
 

@@ -5,14 +5,16 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { resolveUserHomePaths } from "../home/index.js";
 
 const MCPORTER_BIN = path.join(
   os.homedir(),
   ".nvm/versions/node/v22.22.0/bin/mcporter"
 );
 const DEFAULT_CONFIG = path.join(
-  os.homedir(),
-  ".openclaw/workspace/config/mcporter.json"
+  resolveUserHomePaths().workspaceDir,
+  "config",
+  "mcporter.json",
 );
 
 export interface ToolResult {

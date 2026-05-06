@@ -51,6 +51,12 @@ export interface AgentModelConfig {
 
 export interface PetAgentConfig {
   meta?: Record<string, any>;
+  memory?: {
+    externalProvider?: {
+      kind?: "local-file" | "honcho";
+      options?: Record<string, unknown>;
+    };
+  };
   models: {
     mode?: string;
     providers: Record<string, ProviderConfig>;

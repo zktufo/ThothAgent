@@ -1,11 +1,34 @@
+/**
+ * ToolManager — owns LLM-visible tool catalog, execution, and security.
+ *
+ * Each tool call passes through the ToolHarness for:
+ *   - L1 command/path sandboxing (exec, read, write tools)
+ *   - Resource concurrency locks (optional)
+ *   - SQLite audit trail (all tools)
+ *
+ * Three new tools added:
+ *   - exec: run terminal commands (sandboxed)
+ *   - read: read file contents (sandboxed)
+ *   - write: write content to files (sandboxed)
+ */
+
 import type { LLMToolDefinition, LLMToolExecutionResult } from "../llm/index.js";
-import { type VectorMemoryHit, MemoryStore } from "../memory/index.js";
+import { type MemoryRecordKind, type VectorMemoryHit, MemoryStore } from "../memory/index.js";
 import { verifyDrug } from "../tools/index.js";
 import { SkillRegistry } from "../core/skill.js";
 import { MCPClient } from "../core/mcp.js";
 import { formatMemorySearchResults } from "../agent/memory_format.js";
 import { SessionManager } from "../session/index.js";
-import { initPetRag } from "../rag/index.js";
+import { ragSearch } from "../tools/local_rag.js";
+import { clipCompactText, isRecallHistoryQuery } from "../memory/utils.js";
+import { validateMemoryContent, checkMemoryLength, scanMemoryContent, findDuplicate, MEMORY_LIMITS } from "../memory/layered/safety.js";
+import {
+  ToolHarness,
+  type HarnessPolicy,
+  type ExecutionContext,
+  type ToolResult,
+} from "../harness/index.js";
+import { buildBuiltinLLMToolDefinitions } from "./tool_catalog.js";
 
 export interface ToolExecutionContext {
   fallbackUserInput: string;
@@ -25,110 +48,41 @@ function normalizeSearchQuery(input: Record<string, any>, fallback: string): Rec
  * - the LLM-visible tool catalog
  * - actual tool execution and compatibility routing
  * - session event logging for tool use/result
+ * - security/resource/audit via ToolHarness
  */
 export class ToolManager {
+  private harness: ToolHarness;
+
   constructor(
     private memory: MemoryStore,
     private mcp: MCPClient,
     private skills: SkillRegistry,
     private sessions: SessionManager,
-  ) {}
+    harness?: ToolHarness,
+  ) {
+    this.harness = harness ?? new ToolHarness();
+  }
+
+  /**
+   * Update the security policy at runtime.
+   * Creates a new ToolHarness with the merged policy.
+   */
+  configureSecurity(policy: Partial<HarnessPolicy>): void {
+    this.harness.updatePolicy(policy);
+  }
 
   buildLLMTools(imagePath?: string): LLMToolDefinition[] {
-    const tools: LLMToolDefinition[] = [
-      {
-        name: "memory",
-        description: "维护长期记忆。用于保存重要偏好、项目事实、经验教训；支持 add、replace、remove；没有 read。",
-        input_schema: {
-          type: "object",
-          properties: {
-            action: { type: "string", enum: ["add", "replace", "remove"], description: "记忆操作" },
-            target: { type: "string", enum: ["memory", "user"], description: "memory 保存环境/项目/经验；user 保存用户偏好/沟通方式" },
-            content: { type: "string", description: "add 时的新条目；remove 时也可作为 old_text；replace 时可作为 new_text" },
-            old_text: { type: "string", description: "replace/remove 用的唯一子串" },
-            new_text: { type: "string", description: "replace 的新条目内容" },
-          },
-          required: ["action"],
-        },
-      },
-      {
-        name: "memory_search",
-        description: "搜索用户专属记忆库。适合回答昨天聊了什么、之前提到过什么、上次说到哪里等问题。",
-        input_schema: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "要回忆的主题、关键词或自然语言问题" },
-            limit: { type: "number", description: "返回的最多条数，默认 8" },
-            kinds: {
-              type: "array",
-              items: { type: "string", enum: ["message", "fact", "summary", "preference", "event"] },
-              description: "可选：限制记忆类型",
-            },
-          },
-          required: ["query"],
-        },
-      },
-      {
-        name: "session_search",
-        description: "搜索 session 历史，用于回忆过去讨论过但未写入长期记忆的内容。",
-        input_schema: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "要搜索的历史对话关键词或问题" },
-            limit: { type: "number", description: "最多返回多少条历史片段，默认 8" },
-          },
-          required: ["query"],
-        },
-      },
-      {
-        name: "verify_drug",
-        description: "校验宠物药品条码、名称和基础安全提醒",
-        input_schema: {
-          type: "object",
-          properties: {
-            barcode: { type: "string", description: "药品条码，通常为 10 位及以上数字" },
-            name_hint: { type: "string", description: "药品名称、描述或用户原话" },
-          },
-        },
-      },
-            {
-        name: "analyze_pet_image",
-        description: "分析宠物照片中的健康线索",
-        input_schema: {
-          type: "object",
-          properties: {
-            prompt: { type: "string", description: "希望模型重点关注的图片分析要求" },
-            image_path: { type: "string", description: "图片路径；默认使用当前用户上传的图片" },
-          },
-        },
-      },
-      {
-                name: "pet_symptom_query",
-        description: "【Agentic Search】智能搜索宠物知识库。自动多步搜索、评估结果质量、需要时追问。用户描述症状时优先调用，比LLM自己的知识更权威。",
-        input_schema: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "用户描述的症状或问题" },
-            species: {
-              type: "array",
-              items: { type: "string", enum: ["dog", "cat", "rabbit", "hamster", "bird", "general"] },
-              description: "可选：限定物种，如未指定会自动从query推断",
-            },
-          },
-          required: ["query"],
-        },
-      },
-    ];
-
-    const activeTools = imagePath
-      ? tools
-      : tools.filter((tool) => tool.name !== "analyze_pet_image");
+    const activeTools = buildBuiltinLLMToolDefinitions({ imagePath });
 
     activeTools.push(...this.skills.listLLMTools());
     return activeTools;
   }
 
-  async execute(toolName: string, input: Record<string, any>, context: ToolExecutionContext): Promise<LLMToolExecutionResult> {
+  async execute(
+    toolName: string,
+    input: Record<string, any>,
+    context: ToolExecutionContext,
+  ): Promise<LLMToolExecutionResult> {
     await this.sessions.appendToolUse(toolName, input, {
       fallbackUserInput: context.fallbackUserInput,
     });
@@ -138,44 +92,144 @@ export class ToolManager {
     await this.sessions.appendToolResult(toolName, result.message, {
       success: result.success,
       error: result.error,
-      metadata: {
-        input,
-      },
+      metadata: { input },
     });
 
     return result;
   }
 
-    private async runTool(toolName: string, input: Record<string, any>, context: ToolExecutionContext): Promise<LLMToolExecutionResult> {
+  /**
+   * Build an ExecutionContext from the tool context + default policy.
+   */
+  private buildExecCtx(context: ToolExecutionContext): ExecutionContext {
+    return {
+      agentId: "pet-agent",
+      sessionId: context.fallbackUserInput?.slice(0, 64) || "unknown",
+      userInput: context.fallbackUserInput,
+      policy: {}, // uses harness defaults
+    };
+  }
+
+  /**
+   * Convert a ToolResult to LLMToolExecutionResult.
+   */
+  private toLLMResult(result: ToolResult): LLMToolExecutionResult {
+    return {
+      success: result.success,
+      message: result.message,
+      data: result.data,
+      error: result.error,
+    };
+  }
+
+  private async runTool(
+    toolName: string,
+    input: Record<string, any>,
+    context: ToolExecutionContext,
+  ): Promise<LLMToolExecutionResult> {
+    const execCtx = this.buildExecCtx(context);
+
+    // --- NEW: exec tool ---
+    if (toolName === "exec") {
+      const command = typeof input.command === "string" ? input.command.trim() : "";
+      if (!command) {
+        return { success: false, error: "missing_command", message: "⚠️ exec 需要 command 参数。" };
+      }
+
+      const result = await this.harness.exec(command, execCtx);
+      return this.toLLMResult(result);
+    }
+
+    // --- NEW: read tool ---
+    if (toolName === "read") {
+      const filePath = typeof input.file_path === "string" ? input.file_path.trim() : "";
+      if (!filePath) {
+        return { success: false, error: "missing_file_path", message: "⚠️ read 需要 file_path 参数。" };
+      }
+
+      const offset = typeof input.offset === "number" ? input.offset : undefined;
+      const limit = typeof input.limit === "number" ? input.limit : undefined;
+
+      const result = await this.harness.readFile(filePath, execCtx, { offset, limit });
+      return this.toLLMResult(result);
+    }
+
+    // --- NEW: write tool ---
+    if (toolName === "write") {
+      const filePath = typeof input.file_path === "string" ? input.file_path.trim() : "";
+      const content = typeof input.content === "string" ? input.content : "";
+
+      if (!filePath) {
+        return { success: false, error: "missing_file_path", message: "⚠️ write 需要 file_path 参数。" };
+      }
+      if (!content) {
+        return { success: false, error: "missing_content", message: "⚠️ write 需要 content 参数。" };
+      }
+
+      const append = input.append === true;
+
+      const result = await this.harness.writeFile(filePath, content, execCtx, { append });
+      return this.toLLMResult(result);
+    }
+
+    // --- EXISTING: memory tool ---
     if (toolName === "memory") {
       const action = String(input.action || "add");
-      const content = String(input.new_text || input.content || "").trim();
+      const target = String(input.target || "memory");
+      let content = String(input.new_text || input.content || "").trim();
       const oldText = String(input.old_text || "").trim();
+      if (!["memory", "user", "domain"].includes(target)) {
+        return { success: false, error: "invalid_target", message: "⚠️ memory target 只支持 memory / user / domain。" };
+      }
 
-      if (action === "add" && content) {
-        void this.memory.fileMemory.updateUserProfile({ traits: [content] }).catch(() => {});
-        void this.memory.retrievalMemory.append({
-          kind: "fact",
-          text: content,
-          tags: ["memory"],
-          source: "memory-tool",
+      if (action !== "remove" && content) {
+        const length = checkMemoryLength(content, "fact");
+        if (!length.ok) {
+          return { success: false, error: "content_too_long", message: `⚠️ 记忆内容 (${length.used} 字符) 超过 ${length.limit} 字符限制。请缩短内容后重试。` };
+        }
+
+        const safety = scanMemoryContent(content);
+        if (!safety.safe) {
+          return { success: false, error: "content_blocked", message: `⛔ ${safety.error}` };
+        }
+      }
+
+      if ((action === "replace" || action === "remove") && !oldText) {
+        return { success: false, error: "missing_old_text", message: "⚠️ replace/remove 需要 old_text 参数。" };
+      }
+
+      if (action === "add" || action === "replace" || action === "remove") {
+        await this.memory.fileMemory.rewriteBuiltinMemory(target as "memory" | "user" | "domain", {
+          action: action as "add" | "replace" | "remove",
+          content,
+          oldText,
+        });
+        void this.memory.manager.onMemoryWrite({
+          action: action as "add" | "replace" | "remove",
+          target: target as "memory" | "user" | "domain",
+          content,
+          oldText,
         }).catch(() => {});
       }
 
-            const entries = this.memory.retrievalMemory.recent(5);
-      const recentText = (await entries).map((e: any) => `- ${e.text.slice(0, 80)}`).join("\n") || "(empty)";
+      const doc = target === "user"
+        ? await this.memory.fileMemory.getUserMemory()
+        : target === "domain"
+          ? await this.memory.fileMemory.getDomainMemory()
+          : await this.memory.fileMemory.getBuiltinMemory();
       return {
         success: true,
         data: { action, content },
         message: [
-          `✅ memory ${action}: ${content.slice(0, 60) || "(empty)"}`,
-                    `Current memories:`,
-          recentText,
-          "Note: memory changes are written asynchronously and usually show up from the next turn onward.",
+          `✅ memory ${action} -> ${target}: ${content ? content.slice(0, 60) : "(empty)"}`,
+          `Updated document preview:`,
+          clipCompactText(doc, 400),
+          "Note: built-in memory files are rewritten immediately, but the current session keeps using its frozen startup snapshot.",
         ].join("\n"),
       };
-        }
+    }
 
+    // --- EXISTING: session_search ---
     if (toolName === "session_search") {
       const query = typeof input.query === "string" ? input.query.trim() : "";
       if (!query) {
@@ -196,6 +250,7 @@ export class ToolManager {
       return { success: true, data: hits, message };
     }
 
+    // --- EXISTING: memory_search ---
     if (toolName === "memory_search") {
       const query = typeof input.query === "string" ? input.query.trim() : "";
       if (!query) {
@@ -203,14 +258,24 @@ export class ToolManager {
       }
 
       const limit = typeof input.limit === "number" ? input.limit : 8;
-      const kinds = Array.isArray(input.kinds)
-        ? input.kinds.filter((kind): kind is "message" | "fact" | "summary" | "preference" | "event" =>
-          ["message", "fact", "summary", "preference", "event"].includes(String(kind)))
+      const memoryKinds: MemoryRecordKind[] = ["message", "fact", "summary", "preference", "event", "best_try"];
+      const explicitKinds = Array.isArray(input.kinds)
+        ? input.kinds.filter((kind): kind is MemoryRecordKind => memoryKinds.includes(String(kind) as MemoryRecordKind))
         : undefined;
+      const defaultRecallKinds: MemoryRecordKind[] = ["message", "summary", "best_try"];
+      const kinds = explicitKinds?.length
+        ? explicitKinds
+        : isRecallHistoryQuery(query)
+          ? defaultRecallKinds
+          : undefined;
 
       const relativeYesterday = /昨天|昨日|yesterday/i.test(query);
       const relativeToday = /今天|today/i.test(query);
       const relativeBefore = /前天/i.test(query);
+      const recallHistory = isRecallHistoryQuery(query);
+      const archivedSummaryHits = recallHistory
+        ? await this.sessions.searchArchivedSummaries(query, Math.min(4, limit))
+        : [];
 
       const hits = relativeYesterday
         ? await this.memory.recallRelativeDay(-1, limit)
@@ -220,10 +285,15 @@ export class ToolManager {
             ? await this.memory.recallRelativeDay(-2, limit)
             : await this.memory.searchMemory({ query, limit, kinds });
 
-      const message = formatMemorySearchResults(hits as VectorMemoryHit[]);
+      const parts = [
+        formatArchivedSessionSummaryHits(archivedSummaryHits),
+        formatMemorySearchResults(hits as VectorMemoryHit[]),
+      ].filter(Boolean);
+      const message = parts.join("\n\n");
       return { success: true, data: hits, message };
     }
 
+    // --- EXISTING: verify_drug ---
     if (toolName === "verify_drug") {
       const barcode = typeof input.barcode === "string"
         ? input.barcode
@@ -234,6 +304,7 @@ export class ToolManager {
       return verifyDrug(barcode, nameHint);
     }
 
+    // --- EXISTING: analyze_pet_image ---
     if (toolName === "analyze_pet_image") {
       if (!context.imagePath && typeof input.image_path !== "string") {
         return { success: false, error: "missing_image", message: "⚠️ 当前没有可分析的宠物图片。" };
@@ -246,22 +317,26 @@ export class ToolManager {
         image_source: typeof input.image_path === "string" && input.image_path.trim()
           ? input.image_path.trim()
           : context.imagePath,
-            });
+      });
     }
 
-            if (toolName === "pet_symptom_query") {
+    // --- RAG: 知识库查询（外挂 Python 混合检索服务） ---
+    if (toolName === "pet_symptom_query" || toolName === "rag_query") {
       const query = typeof input.query === "string" && input.query.trim()
         ? input.query.trim()
         : context.fallbackUserInput;
 
-      const { AgenticSearcher } = await import("../rag/agentic_search.js");
-      const searcher = new AgenticSearcher();
-      const plan = await searcher.search(query, 5);
-      const message = searcher.formatForPrompt(plan);
+      if (input.mode === "search") {
+        // 只搜不生成，返回原文片段
+        return await ragSearch(query, input.topK ?? 3);
+      }
 
-      return { success: true, data: plan, message };
+      // 默认：问答模式，外挂 RAG 服务做检索+生成
+      const { ragAsk } = await import("../tools/local_rag.js");
+      return await ragAsk(query, input.mode === "agentic" ? "agentic" : "simple");
     }
 
+    // --- SKILL TOOLS ---
     const skill = this.skills.findByLLMToolName(toolName);
     if (!skill) {
       return { success: false, error: "tool_not_found", message: `⚠️ 未找到工具：${toolName}` };
@@ -274,4 +349,27 @@ export class ToolManager {
     const result = await this.skills.callSkill(skill, payload);
     return { success: !result.startsWith("⚠️"), message: result };
   }
+}
+
+function formatArchivedSessionSummaryHits(hits: Array<{
+  session: { sessionKey: string; title: string };
+  summary: { markdown: string; source?: string };
+}>) {
+  if (!hits.length) return "";
+
+  return [
+    "## Archived Session Summaries",
+    ...hits.map((hit, index) => {
+      const bullets = hit.summary.markdown
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("- "))
+        .slice(0, 4)
+        .join("\n");
+      return [
+        `${index + 1}. session=${hit.session.sessionKey} title=${hit.session.title} source=${hit.summary.source || "unknown"}`,
+        bullets || "- 暂无摘要片段。",
+      ].join("\n");
+    }),
+  ].join("\n");
 }

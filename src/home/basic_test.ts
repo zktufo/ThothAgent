@@ -12,16 +12,23 @@ async function main() {
     installDaemon: true,
   });
 
-  assert.ok(paths.agentDataDir.endsWith(path.join("agents", "tester", "agent")));
+  assert.ok(paths.agentDataDir.endsWith(path.join("agents", "tester")));
   assert.ok(paths.workspaceDir.endsWith(path.join("workspace", "tester")));
   assert.ok(paths.sessionDbPath.endsWith(path.join("sessions", "session.sqlite")));
+  assert.equal(paths.agentsFilePath, path.join(homeRoot, "AGENTS.md"));
+  assert.equal(paths.agentName, "tester");
   assert.ok(fs.existsSync(paths.soulPath));
   assert.ok(fs.existsSync(paths.userPath));
   assert.ok(fs.existsSync(paths.visibleMemoryPath));
   assert.ok(fs.existsSync(paths.domainContextPath));
+  assert.ok(fs.existsSync(paths.agentsFilePath));
+  assert.ok(fs.existsSync(paths.dailyDir));
   assert.ok(fs.existsSync(paths.petAgentConfigPath));
   assert.ok(fs.existsSync(paths.daemonManifestPath));
   assert.ok(created.length > 0);
+  const config = JSON.parse(fs.readFileSync(paths.petAgentConfigPath, "utf-8"));
+  assert.equal(config.agents.defaults.agent, "main");
+  assert.equal(config.agents.defaults.workspace, path.join(homeRoot, "workspace"));
 
   const docs = readHomeDocuments(paths);
   assert.ok(docs.soul.includes("毛孩子健康顾问"));

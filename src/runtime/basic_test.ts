@@ -9,17 +9,27 @@ import { onboardUserHome } from "../home/index.js";
 
 class FakeLLM {
   name = "fake-primary";
+  protected currentTotalTokens = 0;
+  protected readonly currentMaxTokens = 200_000;
   usage = {
     promptTokens: 0,
     completionTokens: 0,
-    totalTokens: 0,
-    maxTokens: 200_000,
-    get usageFraction() { return 0; },
+    get totalTokens() { return (this as any).__owner.currentTotalTokens; },
+    get maxTokens() { return (this as any).__owner.currentMaxTokens; },
+    get usageFraction() {
+      const owner = (this as any).__owner;
+      return owner.currentMaxTokens > 0 ? owner.currentTotalTokens / owner.currentMaxTokens : 0;
+    },
     get usageBar() { return ""; },
     add() {},
-  };
+  } as any;
   model = "fake-model";
   baseUrl = "fake://llm";
+
+  constructor(usageFraction: number = 0) {
+    this.currentTotalTokens = Math.floor(this.currentMaxTokens * usageFraction);
+    this.usage.__owner = this;
+  }
 
   isAvailable() {
     return true;
@@ -78,9 +88,9 @@ async function main() {
   assert.ok(Array.isArray(promptContext.recentMessages));
 
   const extraction = await runtime.endCurrentBusinessSession();
-  const retrievalRecent = await memory.retrievalMemory.recent(10);
+  const archivedSummary = await sessions.loadArchivedSessionSummary(extraction?.session.id);
   assert.ok(extraction?.summaryMarkdown.includes("Session Summary"));
-  assert.ok(retrievalRecent.some((item) => item.source === "session-extraction"));
+  assert.ok(archivedSummary?.markdown.includes("Archived Session Summary"));
 
   const fallbackRuntime = new AgentRuntime({
     memory: new MemoryStore({ homePaths, sessionId: "fallback-session" }),
@@ -89,6 +99,29 @@ async function main() {
   });
   const fallbackResult = await fallbackRuntime.runTurn("狗狗挑食怎么办");
   assert.ok(fallbackResult.text.includes("少量多次"));
+
+  const budgetHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pet-agent-runtime-budget-"));
+  const budgetHomePaths = await onboardUserHome({ homeRoot: budgetHomeRoot, agentName: "budget-tester" }).then((result) => result.paths);
+  const budgetMemory = new MemoryStore({ homePaths: budgetHomePaths, sessionId: "budget-session" });
+  const budgetSessions = new SessionManager({ homePaths: budgetHomePaths, sessionId: "budget-session" });
+  await budgetSessions.init();
+  for (let index = 0; index < 18; index += 1) {
+    await budgetSessions.appendMessage(index % 2 === 0 ? "user" : "assistant", `预算压缩测试消息 ${index}，内容较长用于后续自动压缩验证。`);
+  }
+  const highUsageRuntime = new AgentRuntime({
+    memory: budgetMemory,
+    sessions: budgetSessions,
+    llm: new FakeLLM(0.91) as any,
+  });
+  await highUsageRuntime.runTurn("继续刚才的话题，给我一个简洁结论");
+  const compactedBudgetRows = budgetSessions.store.db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM messages
+    WHERE session_id = ?
+      AND content IS NULL
+      AND content_summary IS NOT NULL
+  `).get(await budgetSessions.getCurrentSessionId()) as { count: number };
+  assert.ok(Number(compactedBudgetRows.count) >= 1, "usage 超过 90% 时应自动压缩当前 session 的旧消息");
 
   console.log("runtime basic test passed");
 }

@@ -134,6 +134,20 @@ export function isLowInformationMessage(input: string) {
   return tokens.length <= 2 && normalized.length <= 6;
 }
 
+export function isRecallHistoryQuery(input: string) {
+  const normalized = stripInvisibleUnicode(input).trim().toLowerCase();
+  if (!normalized) return false;
+  return /昨天|昨日|之前|以前|上次|刚才|刚刚|前面|聊过|聊了什么|说过什么|提到过|记得|回忆|history|memory/i.test(normalized);
+}
+
+export function isMetaConversationTurn(userInput: string, assistantOutput: string) {
+  const text = `${stripInvisibleUnicode(userInput)}\n${stripInvisibleUnicode(assistantOutput)}`.toLowerCase();
+  if (/^\/[a-z]/i.test(userInput.trim())) return true;
+  if (/^(hi|hello|hey|yo|你好|你好呀|在吗|哈哈哈?)$/i.test(userInput.trim())) return true;
+  if (/你支持什么功能|我能帮你|我的功能|我是.*顾问|联网搜索来源|工具|model|memory|session|gateway|tui|control-ui/i.test(text)) return true;
+  return false;
+}
+
 export function isNoisyMemoryHit(hit: VectorMemoryHit) {
   const content = stripInvisibleUnicode(hit.content).trim();
   if (!content) return true;

@@ -4,6 +4,7 @@ import type { RetentionCleanupResult, SessionMessageRecord } from "./types.js";
 export interface SessionCompressorOptions {
   messageThreshold?: number;
   recentSummaryLimit?: number;
+  recentKeepLimit?: number;
   retentionDays?: number;
   artifactTrimAfterDays?: number;
   artifactTrimMinBytes?: number;
@@ -19,6 +20,7 @@ export interface SessionCompressorOptions {
 export class SessionCompressor {
   readonly messageThreshold: number;
   readonly recentSummaryLimit: number;
+  readonly recentKeepLimit: number;
   readonly retentionDays: number;
   readonly artifactTrimAfterDays: number;
   readonly artifactTrimMinBytes: number;
@@ -29,6 +31,7 @@ export class SessionCompressor {
   ) {
     this.messageThreshold = options.messageThreshold ?? 18;
     this.recentSummaryLimit = options.recentSummaryLimit ?? 8;
+    this.recentKeepLimit = options.recentKeepLimit ?? 12;
     this.retentionDays = options.retentionDays ?? 30;
     this.artifactTrimAfterDays = options.artifactTrimAfterDays ?? 30;
     this.artifactTrimMinBytes = options.artifactTrimMinBytes ?? 24 * 1024;
@@ -40,8 +43,9 @@ export class SessionCompressor {
   }
 
   async compressSession(sessionId: string) {
+    const previous = await this.store.loadSessionSummary(sessionId);
     const recent = await this.store.loadRecentMessages(sessionId, this.recentSummaryLimit);
-    const markdown = renderSummary(recent);
+    const markdown = renderSummary(previous?.markdown || "", recent);
     await this.store.saveSessionSummary(sessionId, {
       markdown,
       updatedAt: new Date().toISOString(),
@@ -51,6 +55,11 @@ export class SessionCompressor {
 
   async updateSessionSummary(sessionId: string) {
     return this.compressSession(sessionId);
+  }
+
+  async compactCurrentSession(sessionId: string) {
+    await this.compressSession(sessionId);
+    return this.store.compactSessionMessagesExceptRecent(sessionId, this.recentKeepLimit);
   }
 
   async applyRetentionPolicy(): Promise<RetentionCleanupResult> {
@@ -77,7 +86,7 @@ export class SessionCompressor {
   }
 }
 
-function renderSummary(messages: SessionMessageRecord[]) {
+function renderSummary(previousSummary: string, messages: SessionMessageRecord[]) {
   const bullets = messages
     .filter((message) => message.role === "user" || message.role === "assistant" || message.role === "tool")
     .map((message) => {
@@ -90,9 +99,23 @@ function renderSummary(messages: SessionMessageRecord[]) {
       return `- ${label}：${clip(content, 120)}`;
     });
 
+  const userFacts = extractUserFacts(messages);
+  const assistantConclusions = extractAssistantConclusions(messages);
+  const previousCarry = extractCarryForward(previousSummary);
+
   return [
     "# Session Summary",
     "",
+    "## Carry Forward",
+    previousCarry.length ? previousCarry.join("\n") : "- 暂无历史沉淀。",
+    "",
+    "## Key Facts",
+    userFacts.length ? userFacts.join("\n") : "- 暂无稳定关键信息。",
+    "",
+    "## Current Conclusions",
+    assistantConclusions.length ? assistantConclusions.join("\n") : "- 暂无明确结论。",
+    "",
+    "## Recent Turns",
     bullets.length ? bullets.join("\n") : "- 暂无摘要。",
   ].join("\n");
 }
@@ -101,4 +124,31 @@ function clip(text: string, limit: number) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+function extractCarryForward(previousSummary: string) {
+  return previousSummary
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .slice(0, 4);
+}
+
+function extractUserFacts(messages: SessionMessageRecord[]) {
+  return messages
+    .filter((message) => message.role === "user")
+    .map((message) => String(message.contentSummary || message.content || "").trim())
+    .filter(Boolean)
+    .filter((line) => /狗|猫|宠物|岁|月|症状|食欲|呕吐|腹泻|咳嗽|耳朵|皮肤|喝水|绝育/.test(line))
+    .slice(-4)
+    .map((line) => `- ${clip(line, 120)}`);
+}
+
+function extractAssistantConclusions(messages: SessionMessageRecord[]) {
+  return messages
+    .filter((message) => message.role === "assistant")
+    .map((message) => String(message.contentSummary || message.content || "").trim())
+    .filter(Boolean)
+    .slice(-3)
+    .map((line) => `- ${clip(line, 140)}`);
 }

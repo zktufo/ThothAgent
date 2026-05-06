@@ -124,6 +124,16 @@ export interface SessionSummaryPayload {
   updatedAt: string;
 }
 
+export interface ArchivedSessionSummaryPayload extends SessionSummaryPayload {
+  source?: "llm" | "file" | "sqlite" | "fallback";
+}
+
+export interface ArchivedSessionSummaryHit {
+  session: SessionRecord;
+  summary: ArchivedSessionSummaryPayload;
+  keywordHits: number;
+}
+
 export interface RetentionCleanupResult {
   sessionsScanned: number;
   messagesCompacted: number;
@@ -139,4 +149,12 @@ export interface ExtractionMaterial {
 export interface SessionListOptions {
   limit?: number;
   status?: SessionStatus | "all";
+}
+
+export interface SessionIndexEntry {
+  sessionId: string;
+  sessionKey: string;
+  status: SessionStatus;
+  title: string;
+  updatedAt: string;
 }

@@ -2,7 +2,7 @@
  * Unified memory facade.
  *
  * This file is intentionally small and boring:
- * - short-term session messages live in JSON files
+ * - raw conversation/session history lives in SQLiteSessionStore
  * - long-term searchable memory lives in layered retrieval memory
  * - prompt injection is delegated to the layered memory manager
  *
@@ -13,18 +13,17 @@ import path from "path";
 import { FileMemory } from "./layered/file_memory.js";
 import { MemoryManager } from "./layered/manager.js";
 import { RetrievalMemory } from "./layered/retrieval_memory.js";
-import { FileMemoryProvider, RetrievalMemoryProvider, VisibleMemorySummaryProvider } from "./layered/providers.js";
+import { createExternalMemoryProvider } from "./layered/external_provider.js";
+import { BuiltinMemoryProvider } from "./layered/providers.js";
 import { type UserHomePaths, readHomeDocuments, resolveUserHomePaths } from "../home/index.js";
 import {
-  matchesRecord,
-  newId,
   safeName,
   nowIso,
 } from "./utils.js";
 import type { ExtractionMaterial } from "../session/types.js";
 
 export type MemoryRole = "user" | "assistant";
-export type MemoryRecordKind = "message" | "fact" | "summary" | "preference" | "event";
+export type MemoryRecordKind = "message" | "fact" | "summary" | "preference" | "event" | "best_try";
 
 export interface Message {
   role: MemoryRole;
@@ -87,103 +86,9 @@ export interface MemorySearchOptions {
   kinds?: MemoryRecordKind[];
 }
 
-export class FileMemoryBackend {
-  readonly agentRootDir: string;
-  readonly sessionsDir: string;
-  readonly historyPath: string;
-  readonly recordsPath: string;
-
-  constructor(options: { storeDir?: string; homePaths?: UserHomePaths } = {}) {
-    const paths = options.homePaths || resolveUserHomePaths();
-    this.agentRootDir = options.storeDir || paths.agentRoot;
-    this.sessionsDir = path.join(this.agentRootDir, "sessions");
-    this.historyPath = path.join(this.agentRootDir, "consultation_history.json");
-    this.recordsPath = path.join(this.agentRootDir, "records.json");
-    fs.mkdirSync(this.sessionsDir, { recursive: true });
-  }
-
-  private sessionFile(_namespace: string, sessionId: string) {
-    return path.join(this.sessionsDir, `${safeName(sessionId)}.json`);
-  }
-
-  private historyFile(_namespace: string) {
-    return this.historyPath;
-  }
-
-  private recordsFile(_namespace: string) {
-    return this.recordsPath;
-  }
-
-  private readJson(filePath: string, fallback: any) {
-    try {
-      if (!fs.existsSync(filePath)) return fallback;
-      return JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    } catch {
-      return fallback;
-    }
-  }
-
-  private writeJson(filePath: string, data: any) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-  }
-
-  async appendMessage(namespace: string, sessionId: string, message: Message) {
-    const filePath = this.sessionFile(namespace, sessionId);
-    const messages = this.readJson(filePath, []);
-    messages.push(message);
-    this.writeJson(filePath, messages);
-  }
-
-  async getRecentMessages(namespace: string, sessionId: string, maxMessages: number) {
-    return this.readJson(this.sessionFile(namespace, sessionId), []).slice(-maxMessages);
-  }
-
-  async clearSession(namespace: string, sessionId: string) {
-    this.writeJson(this.sessionFile(namespace, sessionId), []);
-  }
-
-  async archiveConsultation(namespace: string, sessionId: string, record: ConsultationRecord) {
-    const filePath = this.historyFile(namespace);
-    const history = this.readJson(filePath, []);
-    history.push(record);
-    this.writeJson(filePath, history);
-    await this.clearSession(namespace, sessionId);
-  }
-
-  async getConsultationHistory(namespace: string, limit = 50) {
-    return this.readJson(this.historyFile(namespace), []).slice(-limit);
-  }
-
-  async upsertRecord(record: MemoryRecord) {
-    const filePath = this.recordsFile(record.namespace);
-    const records = this.readJson(filePath, []);
-    const index = records.findIndex((item: MemoryRecord) => item.id === record.id);
-    if (index >= 0) records[index] = record;
-    else records.push(record);
-    this.writeJson(filePath, records);
-  }
-
-  async queryRecords(query: MemoryQuery) {
-    if (!query.namespace) return [];
-    const records = this.readJson(this.recordsFile(query.namespace), []);
-    return records
-      .filter((record: MemoryRecord) => matchesRecord(record, query))
-      .sort((a: MemoryRecord, b: MemoryRecord) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, query.limit ?? 20);
-  }
-
-  async deleteRecord(namespace: string, id: string) {
-    const filePath = this.recordsFile(namespace);
-    const records = this.readJson(filePath, []);
-    this.writeJson(filePath, records.filter((record: MemoryRecord) => record.id !== id));
-  }
-}
-
 export class MemoryStore {
   readonly namespace: string;
   readonly sessionId: string;
-  readonly backend: FileMemoryBackend;
   readonly userId: string;
   readonly homePaths: UserHomePaths;
   readonly fileMemory: FileMemory;
@@ -194,25 +99,27 @@ export class MemoryStore {
     this.homePaths = options.homePaths || resolveUserHomePaths();
     this.namespace = options.namespace || process.env.PET_AGENT_MEMORY_NAMESPACE || "default";
     this.sessionId = options.sessionId || process.env.PET_AGENT_SESSION_ID || "current";
-    this.backend = new FileMemoryBackend({
-      storeDir: options.storeDir,
-      homePaths: this.homePaths,
-    });
     this.userId = options.userId || process.env.PET_AGENT_USER_ID || this.deriveUserId();
     this.fileMemory = new FileMemory({
       rootDir: options.layeredRootDir || this.homePaths.layeredDir,
-      domainContextPath: this.homePaths.domainContextPath,
+      domainMemoryPath: this.homePaths.domainContextPath,
       visibleMemoryPath: this.homePaths.visibleMemoryPath,
+      userMemoryPath: this.homePaths.userPath,
+      retrievalMemoryPath: this.homePaths.retrievalMemoryPath,
     });
     this.retrievalMemory = new RetrievalMemory({
-      filePath: this.homePaths.retrievalMemoryPath,
+      jsonlPath: this.homePaths.retrievalMemoryPath,
+      dbPath: this.homePaths.retrievalDbPath,
       topK: 6,
     });
 
     this.manager = new MemoryManager([
-      new FileMemoryProvider(this.fileMemory),
-      new RetrievalMemoryProvider(this.retrievalMemory, 4),
-      new VisibleMemorySummaryProvider(this.fileMemory, this.retrievalMemory),
+      new BuiltinMemoryProvider(this.fileMemory),
+      createExternalMemoryProvider({
+        homePaths: this.homePaths,
+        fileMemory: this.fileMemory,
+        retrievalMemory: this.retrievalMemory,
+      }),
     ], {
       sessionId: this.sessionId,
       maxMemoryTokens: 600,
@@ -221,15 +128,7 @@ export class MemoryStore {
   }
 
   private deriveUserId() {
-    try {
-      const userFile = this.homePaths.userPath;
-      const lines = fs.readFileSync(userFile, "utf-8").split(/\r?\n/).map((line) => line.trim());
-      for (const label of ["用户称呼：", "姓名：", "称呼："]) {
-        const line = lines.find((item) => item.includes(label));
-        const value = line?.split("：").slice(1).join("：").trim();
-        if (value && value !== "未设置") return safeName(value);
-      }
-    } catch {}
+    // USER.md 已退出运行时主链路，不再从文档里推导身份。
     return safeName(this.namespace || "default-user");
   }
 
@@ -237,61 +136,49 @@ export class MemoryStore {
     return readHomeDocuments(this.homePaths);
   }
 
-  async addMessage(role: MemoryRole, content: string, imagePath?: string, metadata?: Record<string, any>) {
-    const timestamp = nowIso();
-    const message: Message = {
-      role,
-      content,
-      timestamp,
-      ...(imagePath ? { imagePath } : {}),
-      ...(metadata ? { metadata } : {}),
-    };
+  getRecentContext(_maxMessages = 12) {
+    // Raw recent conversation context now comes from SessionManager/SQLiteSessionStore.
+    // Keep this compatibility method as an empty fallback for older callers.
+    return Promise.resolve([] as Message[]);
+  }
 
-    await this.backend.appendMessage(this.namespace, this.sessionId, message);
-    await this.backend.upsertRecord({
-      id: `message_${this.sessionId}_${timestamp}_${Math.random().toString(36).slice(2, 10)}`,
-      namespace: this.namespace,
-      kind: "message",
-      content,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      tags: ["session", role],
+  async archiveConsultation(petName: string, summary: string, metadata?: Record<string, any>) {
+    return this.retrievalMemory.append({
+      kind: "summary",
+      text: `${petName}: ${summary}`,
+      tags: ["consultation", "summary"],
+      source: "consultation-summary",
       metadata: {
-        role,
+        namespace: this.namespace,
         sessionId: this.sessionId,
-        ...(imagePath ? { imagePath } : {}),
+        petName,
+        archivedAt: nowIso(),
         ...(metadata || {}),
       },
     });
   }
 
-  getRecentContext(maxMessages = 12) {
-    return this.backend.getRecentMessages(this.namespace, this.sessionId, maxMessages);
+  async getHistory(limit: number = 50) {
+    const recent = await this.retrievalMemory.recent(Math.max(limit * 4, limit));
+    return recent
+      .filter((item) => item.tags.includes("consultation"))
+      .slice(0, limit)
+      .map((item) => ({
+        pet_name: String(item.metadata?.petName || ""),
+        summary: item.text,
+        archived_at: String(item.metadata?.archivedAt || item.createdAt),
+        metadata: item.metadata,
+      } satisfies ConsultationRecord));
   }
 
-  archiveConsultation(petName: string, summary: string, metadata?: Record<string, any>) {
-    void this.retrievalMemory.append({
-      kind: "summary",
-      text: `${petName}: ${summary}`,
-      tags: ["consultation", "summary"],
-      source: "consultation-summary",
-      metadata: { petName, ...(metadata || {}) },
-    }).catch(() => {});
-
-    return this.backend.archiveConsultation(this.namespace, this.sessionId, {
-      pet_name: petName,
-      summary,
-      archived_at: nowIso(),
-      ...(metadata ? { metadata } : {}),
+  async clearSession() {
+    await this.fileMemory.updateWorkingState({
+      status: "idle",
+      currentTask: "",
+      currentStep: "session-cleared",
+      vars: {},
     });
-  }
-
-  getHistory(limit?: number) {
-    return this.backend.getConsultationHistory(this.namespace, limit);
-  }
-
-  clearSession() {
-    return this.backend.clearSession(this.namespace, this.sessionId);
+    this.manager.clearSessionSnapshot();
   }
 
   async ingestSessionExtraction(material: ExtractionMaterial) {
@@ -325,44 +212,75 @@ export class MemoryStore {
     });
   }
 
-  remember(
+  async remember(
     kind: MemoryRecordKind,
     content: string,
     options: { id?: string; tags?: string[]; metadata?: Record<string, any>; namespace?: string } = {},
   ) {
-    const timestamp = nowIso();
-    const record: MemoryRecord = {
-      id: options.id || newId(kind),
-      namespace: options.namespace || this.namespace,
+    const namespace = options.namespace || this.namespace;
+    const stored = await this.retrievalMemory.append({
       kind,
-      content,
-      createdAt: timestamp,
-      updatedAt: timestamp,
+      text: content,
       tags: options.tags || [],
-      metadata: options.metadata || {},
-    };
-
-    return this.backend.upsertRecord(record).then(() => {
-      void this.retrievalMemory.append({
-        kind,
-        text: content,
-        tags: options.tags || [],
-        source: "memory-record",
-        metadata: options.metadata || {},
-      }).catch(() => {});
-      return record;
+      source: "memory-record",
+      metadata: {
+        namespace,
+        requestedId: options.id,
+        ...(options.metadata || {}),
+      },
     });
+
+    return {
+      id: stored.id,
+      namespace,
+      kind: stored.kind,
+      content: stored.text,
+      createdAt: stored.createdAt,
+      updatedAt: stored.createdAt,
+      tags: stored.tags,
+      metadata: stored.metadata || {},
+    } satisfies MemoryRecord;
   }
 
-  recall(query: MemoryQuery = {}) {
-    return this.backend.queryRecords({
-      namespace: query.namespace || this.namespace,
-      ...query,
-    });
+  async recall(query: MemoryQuery = {}) {
+    const namespace = query.namespace || this.namespace;
+    const limit = query.limit ?? 20;
+    const hits = query.text
+      ? await this.searchMemory({ query: query.text, limit, kinds: query.kind ? [query.kind] : undefined })
+      : (await this.retrievalMemory.recent(limit)).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        content: item.text,
+        source: item.source,
+        score: 1,
+        createdAt: item.createdAt,
+        updatedAt: item.createdAt,
+        tags: item.tags,
+        metadata: item.metadata || {},
+      } satisfies VectorMemoryHit));
+
+    return hits
+      .filter((hit) => !query.kind || hit.kind === query.kind)
+      .filter((hit) => !query.tags?.length || query.tags.every((tag) => hit.tags.includes(tag)))
+      .filter((hit) => !hit.metadata?.namespace || hit.metadata.namespace === namespace)
+      .map((hit) => ({
+        id: hit.id,
+        namespace,
+        kind: hit.kind,
+        content: hit.content,
+        createdAt: hit.createdAt,
+        updatedAt: hit.updatedAt,
+        tags: hit.tags,
+        metadata: hit.metadata || {},
+      } satisfies MemoryRecord));
   }
 
   async searchMemory(options: MemorySearchOptions) {
-    const hits = await this.retrievalMemory.search(options.query, options.limit ?? 8);
+    const hits = await this.manager.searchMemory({
+      query: options.query,
+      limit: options.limit ?? 8,
+      kinds: options.kinds,
+    });
     return hits
       .filter((hit) => !options.kinds?.length || options.kinds.includes(hit.kind))
       .map<VectorMemoryHit>((hit) => ({
@@ -382,23 +300,23 @@ export class MemoryStore {
     return this.recallByDate(this.dateKeyFromOffset(dayOffset), limit);
   }
 
-    async recallByDate(dateKey: string, limit: number = 12): Promise<VectorMemoryHit[]> {
-    const records: MemoryRecord[] = await this.recall({ limit: 500 });
-    return records
-      .filter((r: MemoryRecord) => r.createdAt.startsWith(dateKey) || r.updatedAt.startsWith(dateKey))
-      .sort((a: MemoryRecord, b: MemoryRecord) => a.createdAt.localeCompare(b.createdAt))
-      .slice(0, limit)
-      .map((record: MemoryRecord) => ({
-        id: record.id,
-        kind: record.kind,
-        content: record.content,
-        source: "record-memory",
-        score: 1,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        tags: record.tags,
-        metadata: record.metadata,
-      }));
+  async recallByDate(dateKey: string, limit: number = 12): Promise<VectorMemoryHit[]> {
+    const hits = await this.manager.searchMemory({
+      query: dateKey,
+      limit,
+      datePrefix: dateKey,
+    });
+    return hits.map((record) => ({
+      id: record.id,
+      kind: record.kind,
+      content: record.text,
+      source: record.source,
+      score: typeof record.score === "number" ? record.score : 1,
+      createdAt: record.createdAt,
+      updatedAt: record.createdAt,
+      tags: record.tags,
+      metadata: record.metadata || {},
+    }));
   }
 
   private dateKeyFromOffset(offsetDays: number) {
@@ -407,8 +325,8 @@ export class MemoryStore {
     return date.toISOString().slice(0, 10);
   }
 
-  forget(id: string, namespace: string = this.namespace) {
-    return this.backend.deleteRecord(namespace, id);
+  async forget(id: string, _namespace: string = this.namespace) {
+    return this.retrievalMemory.delete(id);
   }
 }
 

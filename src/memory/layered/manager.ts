@@ -1,9 +1,11 @@
 import { PromptBuilder } from "./prompt_builder.js";
 import type { MemoryProvider } from "./provider.js";
 import type {
+  MemorySearchRequest,
   MemoryManagerOptions,
   MemorySnapshot,
   PromptBuildOutput,
+  RetrievalMemoryHit,
   SyncTurnInput,
 } from "./types.js";
 
@@ -12,6 +14,7 @@ export class MemoryManager {
   private initialized = false;
   private pendingBackgroundTasks = new Set<Promise<void>>();
   private lastSnapshot: MemorySnapshot | null = null;
+  private sessionSnapshots = new Map<string, MemorySnapshot>();
   private readonly maxMemoryTokens: number;
   private readonly debug: boolean;
 
@@ -31,14 +34,21 @@ export class MemoryManager {
     this.logFailures("init", settled);
   }
 
-  async onTurnStart(userInput: string) {
-    // onTurnStart only orchestrates cheap provider prefetch and never performs heavy background work.
+  async onTurnStart(userInput: string, sessionId: string = this.options.sessionId) {
+    // onTurnStart constructs a frozen snapshot once per session and reuses it
+    // until the session changes (reset/new child session).
     await this.init();
+    const existing = this.sessionSnapshots.get(sessionId);
+    if (existing) {
+      this.lastSnapshot = existing;
+      return existing;
+    }
+
     const now = new Date().toISOString();
     const settled = await Promise.allSettled(
       this.providers.map((provider) => provider.prefetch({
         userInput,
-        sessionId: this.options.sessionId,
+        sessionId,
         now,
         debug: this.debug,
       })),
@@ -50,6 +60,10 @@ export class MemoryManager {
     const workingState = settled
       .flatMap((result) => result.status === "fulfilled" && result.value.workingState ? [result.value.workingState] : [])
       .at(-1);
+    const systemPromptBlocks = settled
+      .flatMap((result) => result.status === "fulfilled" && result.value.systemPromptBlock
+        ? [result.value.systemPromptBlock]
+        : []);
     const debugLines = settled.flatMap((result, index) => {
       if (result.status === "rejected") return [`provider:${this.providers[index]?.name || index} prefetch failed: ${String(result.reason)}`];
       return result.value.debug || [];
@@ -60,8 +74,10 @@ export class MemoryManager {
       createdAt: now,
       blocks,
       workingState,
+      systemPromptBlocks,
       debug: debugLines,
     };
+    this.sessionSnapshots.set(sessionId, snapshot);
     this.lastSnapshot = snapshot;
     return snapshot;
   }
@@ -75,7 +91,46 @@ export class MemoryManager {
     });
   }
 
-  syncTurn(userInput: string, assistantOutput: string) {
+  async buildSystemPromptAdditions() {
+    await this.init();
+    const settled = await Promise.allSettled(
+      this.providers
+        .filter((provider) => typeof provider.systemPromptBlock === "function")
+        .map((provider) => provider.systemPromptBlock!()),
+    );
+    return settled
+      .flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : []);
+  }
+
+  async searchMemory(input: MemorySearchRequest): Promise<RetrievalMemoryHit[]> {
+    await this.init();
+    const providers = this.providers.filter((provider) => typeof provider.searchMemory === "function");
+    if (!providers.length) return [];
+
+    const settled = await Promise.allSettled(
+      providers.map((provider) => provider.searchMemory!(input)),
+    );
+
+    const merged: RetrievalMemoryHit[] = [];
+    const seen = new Set<string>();
+    for (const result of settled) {
+      if (result.status !== "fulfilled") continue;
+      for (const hit of result.value || []) {
+        if (seen.has(hit.id)) continue;
+        seen.add(hit.id);
+        merged.push(hit);
+      }
+    }
+
+    return merged
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.createdAt.localeCompare(a.createdAt);
+      })
+      .slice(0, input.limit);
+  }
+
+  syncTurn(userInput: string, assistantOutput: string, sessionId: string = this.options.sessionId) {
     // syncTurn is intentionally fire-and-forget from the caller's perspective.
     const task = this.runBackground("syncTurn", async () => {
       await this.init();
@@ -86,7 +141,7 @@ export class MemoryManager {
           await provider.syncTurn!({
             userInput,
             assistantOutput,
-            sessionId: this.options.sessionId,
+            sessionId,
             now,
           } satisfies SyncTurnInput);
           settled.push({ status: "fulfilled", value: undefined });
@@ -100,7 +155,7 @@ export class MemoryManager {
     return task;
   }
 
-  queuePrefetch(userInput: string) {
+  queuePrefetch(userInput: string, sessionId: string = this.options.sessionId) {
     // queuePrefetch is where providers can do heavier cache warming for the next round.
     return this.runBackground("queuePrefetch", async () => {
       await this.init();
@@ -110,7 +165,7 @@ export class MemoryManager {
           .filter((provider) => typeof provider.queuePrefetch === "function")
           .map((provider) => provider.queuePrefetch!({
             userInput,
-            sessionId: this.options.sessionId,
+            sessionId,
             now,
           })),
       );
@@ -118,8 +173,46 @@ export class MemoryManager {
     });
   }
 
+  onMemoryWrite(
+    input: {
+      action: "add" | "replace" | "remove";
+      target: "memory" | "user" | "domain";
+      content: string;
+      oldText?: string;
+    },
+    sessionId: string = this.options.sessionId,
+  ) {
+    return this.runBackground("onMemoryWrite", async () => {
+      await this.init();
+      const now = new Date().toISOString();
+      const settled = await Promise.allSettled(
+        this.providers
+          .filter((provider) => typeof provider.onMemoryWrite === "function")
+          .map((provider) => provider.onMemoryWrite!({
+            ...input,
+            sessionId,
+            now,
+          })),
+      );
+      this.logFailures("onMemoryWrite", settled);
+    });
+  }
+
   getLastSnapshot() {
     return this.lastSnapshot;
+  }
+
+  clearSessionSnapshot(sessionId?: string) {
+    if (!sessionId) {
+      this.sessionSnapshots.clear();
+      this.lastSnapshot = null;
+      return;
+    }
+    const removed = this.sessionSnapshots.get(sessionId);
+    this.sessionSnapshots.delete(sessionId);
+    if (this.lastSnapshot && removed && this.lastSnapshot === removed) {
+      this.lastSnapshot = null;
+    }
   }
 
   async flushBackgroundTasks() {

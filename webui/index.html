@@ -1,125 +1,301 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PetAgent Control UI</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PetAgent Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=SF+Pro+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand-block">
-        <div class="brand-row">
-          <div class="brand-mark">PA</div>
-          <div>
-            <div class="eyebrow">控制</div>
-            <h1>PetAgent</h1>
-          </div>
+  <div class="app-shell">
+    <aside class="sidebar-panel">
+      <section class="sidebar-brand glass-panel">
+        <div class="brand-mark">PA</div>
+        <div class="brand-copy">
+          <div class="brand-kicker">Control Surface</div>
+          <h1>PetAgent</h1>
+          <p>Apple-inspired web control UI</p>
         </div>
+      </section>
+
+      <nav class="sidebar-nav">
+        <button class="sidebar-item active" id="navChat" data-page="chat" type="button" aria-label="聊天">
+          <span class="sidebar-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 18.5L3.5 20l1.5-3.5V6.8A2.8 2.8 0 0 1 7.8 4h8.4A2.8 2.8 0 0 1 19 6.8v5.4A2.8 2.8 0 0 1 16.2 15H9.7L7 18.5Z"/>
+            </svg>
+          </span>
+          <span class="sidebar-label">聊天</span>
+        </button>
+        <button class="sidebar-item" id="navDashboard" data-page="dashboard" type="button" aria-label="概览">
+          <span class="sidebar-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 13.5h4.5V20H4zM9.75 9h4.5v11h-4.5zM15.5 4h4.5v16h-4.5z"/>
+            </svg>
+          </span>
+          <span class="sidebar-label">概览</span>
+        </button>
+        <button class="sidebar-item" id="navSettings" data-page="settings" type="button" aria-label="设置">
+          <span class="sidebar-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Zm8 4.3-.2-.5 1.4-2.4-2.1-2.1-2.4 1.4-.5-.2-.7-2.7H12l-.7 2.7-.5.2-2.4-1.4-2.1 2.1L5.7 12l-.2.5-2.7.7v3l2.7.7.2.5-1.4 2.4 2.1 2.1 2.4-1.4.5.2.7 2.7h3l.7-2.7.5-.2 2.4 1.4 2.1-2.1-1.4-2.4.2-.5 2.7-.7v-3l-2.7-.7Z"/>
+            </svg>
+          </span>
+          <span class="sidebar-label">设置</span>
+        </button>
+      </nav>
+
+      <footer class="sidebar-footer glass-panel">
         <div class="live-indicator">
           <span class="live-dot" id="liveDot"></span>
           <span id="liveStatus">offline</span>
         </div>
-      </div>
-
-      <nav class="sidebar-nav">
-        <div class="nav-section">
-          <div class="nav-label">聊天</div>
-          <button class="nav-item active" type="button">聊天</button>
+        <div class="home-copy">
+          <span>Home</span>
+          <strong id="homeRoot">-</strong>
         </div>
-        <div class="nav-section">
-          <div class="nav-label">控制</div>
-          <button class="nav-item" type="button">概览</button>
-          <button class="nav-item" type="button">会话</button>
-          <button class="nav-item" type="button">使用情况</button>
-        </div>
-      </nav>
-
-      <section class="session-rail">
-        <div class="section-heading">
-          <span>会话</span>
-          <button class="mini-btn" id="refreshButton" type="button">刷新</button>
-        </div>
-        <div class="session-list" id="sessionList"></div>
-      </section>
-
-      <footer class="sidebar-footer">
-        <span class="version-pill">workspace</span>
-        <span class="home-root" id="homeRoot">~/.PetAgent</span>
       </footer>
     </aside>
 
-    <main class="workspace">
+    <main class="main-canvas">
       <header class="topbar">
-        <div class="topbar-title">
-          <span class="crumb">OpenClaw</span>
-          <span class="crumb-sep">›</span>
-          <span class="crumb active">聊天</span>
+        <div class="topbar-copy">
+          <div class="eyebrow" id="pageEyebrow">Chat Surface</div>
+          <h2 id="pageTitle">聊天</h2>
         </div>
-        <div class="topbar-actions">
-          <span class="chip" id="gatewayAddress">http://127.0.0.1:18889</span>
-          <button class="icon-btn" id="resetButton" type="button" title="Reset Session">↻</button>
-          <button class="icon-btn danger" id="endButton" type="button" title="End Session">✦</button>
+        <div class="topbar-meta">
+          <span class="meta-pill glass-panel" id="chatSessionKey">session: -</span>
+          <span class="meta-pill glass-panel" id="indexedSessionKey">index: -</span>
+          <span class="meta-pill glass-panel" id="gatewayAddress">http://127.0.0.1:18889</span>
+          <button class="icon-button glass-panel" id="refreshButton" type="button" title="刷新">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5v5h-5M4 19v-5h5M6.8 9A7 7 0 0 1 19 10M17.2 15A7 7 0 0 1 5 14"/></svg>
+          </button>
         </div>
       </header>
 
-      <section class="control-row">
-        <label class="control-field">
-          <span>Session</span>
-          <div class="readonly-pill" id="activeSession">-</div>
-        </label>
-        <label class="control-field">
-          <span>Primary Model</span>
-          <select id="primaryModel"></select>
-        </label>
-        <label class="control-field">
-          <span>Fallbacks</span>
-          <select id="fallbackModels" multiple size="1"></select>
-        </label>
-        <label class="control-field compact">
-          <span>Runtime</span>
-          <div class="runtime-meta">
-            <strong id="activeModel">-</strong>
-            <small id="tokenUsage">0 / 0</small>
-          </div>
-        </label>
-        <div class="control-actions">
-          <button class="primary-btn" id="saveRouteButton" type="button">保存路由</button>
+      <section class="page active" id="pageChat">
+        <div class="canvas-grid">
+          <section class="chat-stage glass-card">
+            <div class="chat-header">
+              <div class="chat-toolbar">
+                <label class="glass-field compact-field">
+                  <span>Primary Model</span>
+                  <select id="primaryModel"></select>
+                </label>
+                <label class="glass-field compact-field">
+                  <span>Session</span>
+                  <select id="sessionSelector"></select>
+                </label>
+                <div class="budget-panel compact-budget glass-subpanel">
+                  <div class="budget-head">
+                    <span>Context Budget</span>
+                    <span id="tokenUsage">0 / 0</span>
+                  </div>
+                  <div class="budget-track">
+                    <span id="budgetFill"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="thinking-strip glass-subpanel" id="thinkingStrip">
+                <span class="thinking-pulse"></span>
+                <span id="thinkingLabel">Ready</span>
+              </div>
+            </div>
+            <div class="chat-log-wrap">
+              <button class="new-messages-button glass-panel" id="newMessagesButton" type="button">↓ New messages</button>
+              <div class="chat-log" id="chatLog"></div>
+            </div>
+            <div class="composer-shell">
+              <div class="attachment-strip" id="attachmentStrip"></div>
+              <div class="composer glass-subpanel">
+                <textarea id="messageInput" placeholder="输入消息，网关会统一写入 session.sqlite 与 history"></textarea>
+                <button class="send-button glass-panel" id="sendButton" type="button">发送</button>
+              </div>
+              <div class="composer-actions composer-actions-under">
+                <button class="composer-icon glass-panel" id="fileButton" type="button" title="文件">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9l-4-6Z"/><path d="M14 3v6h6"/><path d="M9.5 13.5h5M9.5 17h5"/></svg>
+                </button>
+                <button class="composer-icon glass-panel" id="voiceButton" type="button" title="语音">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V7a3 3 0 0 1 3-3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3M8 21h8"/></svg>
+                </button>
+                <button class="composer-icon glass-panel" id="imageButton" type="button" title="图片">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Z"/><path d="m7 16 3.5-4 2.5 3 2-2 2 3"/><path d="M9 9.25h.01"/></svg>
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <input id="imageInput" type="file" accept="image/*" hidden>
+        <input id="fileInput" type="file" hidden>
+      </section>
+
+      <section class="page" id="pageDashboard">
+        <div class="canvas-grid dashboard-grid">
+          <section class="glass-card status-strip">
+            <div class="section-heading">
+              <span>实时概览</span>
+              <span class="section-micro">OpenClaw style</span>
+            </div>
+            <div class="stats-grid">
+              <article class="stat-card glass-subpanel">
+                <span>CPU</span>
+                <strong id="statCpu">0%</strong>
+                <small>推理负载估算</small>
+              </article>
+              <article class="stat-card glass-subpanel">
+                <span>流量</span>
+                <strong id="statTraffic">0 req/min</strong>
+                <small>WebSocket + RPC</small>
+              </article>
+              <article class="stat-card glass-subpanel">
+                <span>任务数</span>
+                <strong id="statTasks">0</strong>
+                <small>当前工具流与队列</small>
+              </article>
+            </div>
+          </section>
+
+          <section class="glass-card wave-stage">
+            <div class="section-heading">
+              <span>流量波形</span>
+              <span class="section-micro">Bezier only</span>
+            </div>
+            <svg id="waveChart" class="wave-chart" viewBox="0 0 960 280" preserveAspectRatio="none" aria-label="wave chart">
+              <defs>
+                <linearGradient id="waveStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="rgba(125,211,252,0.95)"></stop>
+                  <stop offset="50%" stop-color="rgba(79,140,255,0.98)"></stop>
+                  <stop offset="100%" stop-color="rgba(94,92,230,0.9)"></stop>
+                </linearGradient>
+              </defs>
+              <path id="waveGlow" class="wave-glow" d=""></path>
+              <path id="wavePath" class="wave-line" d=""></path>
+            </svg>
+          </section>
+
+          <section class="glass-card telemetry-panel">
+            <div class="section-heading">
+              <span>运行态</span>
+              <span class="section-micro">Live runtime</span>
+            </div>
+            <div class="telemetry-list">
+              <div class="telemetry-row">
+                <span>Gateway</span>
+                <strong id="dashGateway">-</strong>
+              </div>
+              <div class="telemetry-row">
+                <span>活跃模型</span>
+                <strong id="dashModel">-</strong>
+              </div>
+              <div class="telemetry-row">
+                <span>当前 Session</span>
+                <strong id="dashSession">-</strong>
+              </div>
+              <div class="telemetry-row">
+                <span>会话索引</span>
+                <strong id="dashIndex">-</strong>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
 
-      <section class="budget-row">
-        <div class="budget-track"><span id="budgetFill"></span></div>
-        <span class="budget-label" id="chatSessionKey">-</span>
-      </section>
+      <section class="page" id="pageSettings">
+        <div class="canvas-grid settings-grid">
+          <aside class="settings-sidebar glass-card">
+            <div class="section-heading">
+              <span>设置分类</span>
+              <span class="section-micro">Secondary tabs</span>
+            </div>
+            <button class="settings-tab active" data-settings-tab="general" type="button">通用</button>
+            <button class="settings-tab" data-settings-tab="advanced" type="button">高级</button>
+            <button class="settings-tab" data-settings-tab="network" type="button">网络</button>
+          </aside>
 
-      <section class="conversation-shell">
-        <div class="chat-stage">
-          <div class="chat-log" id="chatLog"></div>
-          <div class="thinking-strip" id="thinkingStrip">
-            <span class="thinking-pulse"></span>
-            <span id="thinkingLabel">等待输入…</span>
-          </div>
-        </div>
+          <section class="settings-content glass-card">
+            <div class="settings-panel active" id="settings-general">
+              <div class="section-heading">
+                <span>通用</span>
+                <span class="section-micro">General</span>
+              </div>
+              <div class="settings-form">
+                <label class="form-card glass-subpanel">
+                  <div>
+                    <strong>自动聚焦输入框</strong>
+                    <p>页面激活后自动将焦点停留在消息输入框。</p>
+                  </div>
+                  <button class="switch active" id="switchAutoFocus" type="button" aria-pressed="true"><span></span></button>
+                </label>
+                <label class="form-card glass-subpanel">
+                  <div>
+                    <strong>界面动态强度</strong>
+                    <p>控制玻璃反射与页面动态氛围的强弱。</p>
+                  </div>
+                  <div class="slider-shell">
+                    <input id="motionSlider" type="range" min="0" max="100" value="72">
+                    <span id="motionSliderValue">72%</span>
+                  </div>
+                </label>
+              </div>
+            </div>
 
-        <div class="composer-shell">
-          <div class="composer-toolbar">
-            <span>Message</span>
-            <span class="composer-hint">Cmd/Ctrl + Enter 发送</span>
-          </div>
-          <div class="composer">
-            <textarea id="messageInput" placeholder="输入宠物健康问题、业务任务或调试指令…"></textarea>
-            <button class="send-btn" id="sendButton" type="button">发送</button>
-          </div>
+            <div class="settings-panel" id="settings-advanced">
+              <div class="section-heading">
+                <span>高级</span>
+                <span class="section-micro">Advanced</span>
+              </div>
+              <div class="settings-form">
+                <label class="form-card glass-subpanel">
+                  <div>
+                    <strong>工具轨迹常显</strong>
+                    <p>在聊天页中默认展开工具调用明细卡片。</p>
+                  </div>
+                  <button class="switch" id="switchTraceExpanded" type="button" aria-pressed="false"><span></span></button>
+                </label>
+                <label class="form-card glass-subpanel">
+                  <div>
+                    <strong>流式节奏阈值</strong>
+                    <p>微调实时渲染节奏与波形图刷新频率。</p>
+                  </div>
+                  <div class="slider-shell">
+                    <input id="streamSlider" type="range" min="0" max="100" value="58">
+                    <span id="streamSliderValue">58%</span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-panel" id="settings-network">
+              <div class="section-heading">
+                <span>网络</span>
+                <span class="section-micro">Network</span>
+              </div>
+              <div class="settings-form">
+                <label class="form-card glass-subpanel">
+                  <div>
+                    <strong>Gateway 地址</strong>
+                    <p>当前 control UI 连接到的网关地址。</p>
+                  </div>
+                  <div class="readonly-token" id="settingsGatewayAddress">http://127.0.0.1:18889</div>
+                </label>
+                <label class="form-card glass-subpanel">
+                  <div>
+                    <strong>低延迟同步</strong>
+                    <p>收到 `session.updated` 事件时优先刷新会话与消息。</p>
+                  </div>
+                  <button class="switch active" id="switchFastSync" type="button" aria-pressed="true"><span></span></button>
+                </label>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
     </main>
   </div>
 
-  <script type="module" src="/app.js"></script>
+  <script src="/app.js" type="module"></script>
 </body>
 </html>

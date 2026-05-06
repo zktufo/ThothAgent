@@ -6,9 +6,9 @@ import {
 import { MemoryStore, logDaily } from "../memory/index.js";
 import { SkillRegistry, registry } from "../core/skill.js";
 import { MCPClient } from "../core/mcp.js";
-import { buildSkillCatalog, buildSystemPrompt } from "../agent/prompt.js";
+import { buildSkillCatalog, buildSystemPrompt, buildToolDirectory, buildEnvironmentMetadata, buildSkillsIndex } from "../agent/prompt.js";
 import { verifyDrug } from "../tools/index.js";
-import { SessionManager } from "../session/index.js";
+import { SessionArchiver, SessionManager } from "../session/index.js";
 import { ToolManager } from "./tool_manager.js";
 import { ModelManager } from "../model_manager/index.js";
 
@@ -24,6 +24,7 @@ export interface RuntimeTurnResult {
 }
 
 export interface RuntimeBudgetPolicy {
+  compactUsageFraction: number;
   maxToolSteps: number;
   maxProviderAttempts: number;
   maxUsageFraction: number;
@@ -50,6 +51,7 @@ interface ProviderExecutionContext {
 }
 
 const DEFAULT_BUDGET: RuntimeBudgetPolicy = {
+  compactUsageFraction: 0.9,
   maxToolSteps: 4,
   maxProviderAttempts: 2,
   maxUsageFraction: 0.98,
@@ -65,6 +67,7 @@ export class AgentRuntime {
   readonly mcp: MCPClient;
   readonly skills: SkillRegistry;
   readonly sessions: SessionManager;
+  readonly archiver: SessionArchiver;
   readonly tools: ToolManager;
   readonly budget: RuntimeBudgetPolicy;
   readonly modelManager: ModelManager;
@@ -96,6 +99,9 @@ export class AgentRuntime {
 
     this.skills.setMCP(this.mcp);
     void this.skills.loadAll();
+    this.archiver = new SessionArchiver(
+      this.sessions.store,
+    );
     this.tools = new ToolManager(this.memory, this.mcp, this.skills, this.sessions);
 
     const skillList = this.skills.listAll();
@@ -121,12 +127,15 @@ export class AgentRuntime {
       onTrace?.(event);
     };
 
-    const recallIntent = /(昨天|昨日|前天|上次|之前|前面|刚才|聊了什么|说到哪|提到过|记得吗|remember|yesterday)/i.test(userInput);
-    const turnMemory = await this.memory.manager.onTurnStart(userInput);
-    mark("memory_prefetch");
     await this.sessions.init();
-    await this.maybeCompactContext();
+    await this.maybeCompactContext({
+      forceCurrentSessionCompaction: this.primaryUsageFraction() >= this.budget.compactUsageFraction,
+    });
     mark("session_init");
+    const sessionId = await this.sessions.getCurrentSessionId();
+    const recallIntent = /(昨天|昨日|前天|上次|之前|前面|刚才|聊了什么|说到哪|提到过|记得吗|remember|yesterday)/i.test(userInput);
+    const turnMemory = await this.memory.manager.onTurnStart(userInput, sessionId);
+    mark("memory_prefetch");
 
         if (this.primaryUsageFraction() >= this.budget.maxUsageFraction) {
       return {
@@ -140,7 +149,6 @@ export class AgentRuntime {
       const skill = this.skills.match(userInput);
       if (skill) {
         await this.sessions.appendMessage("user", userInput);
-        await this.memory.addMessage("user", userInput);
         emitTrace({ type: "tool_use", toolName: skill.name, step: 0, input: { prompt: userInput } });
         const result = await this.skills.callSkill(skill, userInput);
         emitTrace({
@@ -164,7 +172,6 @@ export class AgentRuntime {
     ];
     if (drugKw.some((kw) => userInput.includes(kw))) {
       await this.sessions.appendMessage("user", userInput);
-      await this.memory.addMessage("user", userInput);
       const barcode = userInput.match(/\d{10,}/)?.[0];
       await this.sessions.appendToolUse("verify_drug", { barcode, name_hint: userInput });
       emitTrace({ type: "tool_use", toolName: "verify_drug", step: 0, input: { barcode, name_hint: userInput } });
@@ -190,7 +197,6 @@ export class AgentRuntime {
 
     if (recallIntent) {
       await this.sessions.appendMessage("user", userInput);
-      await this.memory.addMessage("user", userInput);
       emitTrace({ type: "tool_use", toolName: "memory_search", step: 0, input: { query: userInput, limit: 8 } });
       const recallResult = await this.tools.execute("memory_search", { query: userInput, limit: 8 }, {
         fallbackUserInput: userInput,
@@ -224,7 +230,13 @@ export class AgentRuntime {
         context: recallContext,
         tools: [],
         toolsEnabled: false,
-        systemPrompt: buildSystemPrompt(buildSkillCatalog(this.skills.listAll()), this.memory.getHomeDocuments(), recallMemoryContext),
+        systemPrompt: buildSystemPrompt(
+          buildToolDirectory(),
+          buildEnvironmentMetadata(await this.sessions.getCurrentSessionId()),
+          buildSkillsIndex(this.skills.listAll()),
+          this.memory.getHomeDocuments(),
+          recallMemoryContext,
+        ),
         emitTrace,
       });
             await this.finalizeTurn(userInput, answer, { userAlreadyStored: true });
@@ -234,10 +246,8 @@ export class AgentRuntime {
     }
 
     const promptSession = await this.sessions.loadPromptContext(10);
+    // session-summary 已包含在 Frozen Memory Snapshot 中，不再重复注入
     const recentContext = [
-      ...(promptSession.sessionSummary?.markdown
-        ? [{ role: "user" as const, content: `<session-summary>\n${promptSession.sessionSummary.markdown}\n</session-summary>` }]
-        : []),
       ...promptSession.recentMessages
         .filter((message) => message.role === "user" || message.role === "assistant" || message.role === "tool")
         .map((message) => ({
@@ -247,9 +257,14 @@ export class AgentRuntime {
     ];
         const promptInput = this.memory.manager.buildMessages(userInput, recentContext, turnMemory);
     const context = promptInput.messages;
-    const skillCatalog = buildSkillCatalog(this.skills.listAll());
     const memorySnapshot = promptInput.includedBlocks.length > 0 ? promptInput.memoryContext : undefined;
-    const systemPrompt = buildSystemPrompt(skillCatalog, this.memory.getHomeDocuments(), memorySnapshot);
+    const systemPrompt = buildSystemPrompt(
+      buildToolDirectory(),
+      buildEnvironmentMetadata(await this.sessions.getCurrentSessionId()),
+      buildSkillsIndex(this.skills.listAll()),
+      this.memory.getHomeDocuments(),
+      memorySnapshot,
+    );
     const tools = this.tools.buildLLMTools(imagePath);
 
         mark("prompt_assembled");
@@ -272,12 +287,59 @@ export class AgentRuntime {
   }
 
   async endCurrentBusinessSession() {
-    const extraction = await this.sessions.endCurrentSession();
+    const session = await this.sessions.getCurrentSession();
+    await this.sessions.compressor.updateSessionSummary(session.id);
+    await this.sessions.store.endSession(session.id);
+    await this.memory.manager.flushBackgroundTasks();
+
+    // 用最便宜的 LLM 生成会话摘要，提升归档质量
+    let llmSummary: string | undefined;
+    try {
+      llmSummary = await this.generateSessionSummary(session.id);
+    } catch (e) {
+      logDaily(`[Session Summary] LLM summarization failed: ${e}`);
+    }
+
+    const extraction = await this.archiver.archive(session.id, llmSummary);
     if (extraction) {
-      await this.memory.ingestSessionExtraction(extraction);
       logDaily(`[Session End] ${extraction.session.sessionKey}`);
     }
     return extraction;
+  }
+
+  private async generateSessionSummary(sessionId: string): Promise<string> {
+    const messages = await this.sessions.loadHistory(sessionId, 80);
+    if (messages.length < 2) return "";
+
+    // 选最便宜的 provider（首选最后一个 fallback，通常是轻量模型）
+    const provider = this.llmProviders.length > 1
+      ? this.llmProviders[this.llmProviders.length - 1]
+      : this.llmProviders[0];
+
+    const dialog = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-30)
+      .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.contentSummary || m.content || ""}`)
+      .join("\n");
+
+    if (!dialog.trim()) return "";
+
+    const prompt = [
+      "总结以下对话（宠物健康顾问），用中文、分点列出：",
+      "- 用户问的核心问题",
+      "- 重要的宠物信息（品种、年龄、症状等）",
+      "- 最终处理建议或结论",
+      "",
+      dialog.slice(-4000),
+    ].join("\n");
+
+    const result = await provider.chat(
+      [{ role: "user", content: prompt }],
+      "你是一个简洁的摘要助手。",
+      1024,
+    );
+
+    return result.text.trim();
   }
 
   private async executeWithFallback(input: {
@@ -379,18 +441,22 @@ export class AgentRuntime {
   private async finalizeTurn(userInput: string, assistantText: string, options: { userAlreadyStored?: boolean } = {}) {
     if (!options.userAlreadyStored) {
       await this.sessions.appendMessage("user", userInput);
-      await this.memory.addMessage("user", userInput);
     }
     await this.sessions.appendMessage("assistant", assistantText);
-    await this.memory.addMessage("assistant", assistantText);
-    await this.memory.manager.syncTurn(userInput, assistantText);
-    this.memory.manager.queuePrefetch(userInput);
+    const sessionId = await this.sessions.getCurrentSessionId();
+    void this.memory.manager.syncTurn(userInput, assistantText, sessionId);
+    void this.memory.manager.queuePrefetch(userInput, sessionId);
   }
 
-  private async maybeCompactContext() {
+  private async maybeCompactContext(options: { forceCurrentSessionCompaction?: boolean } = {}) {
     const sessionId = await this.sessions.getCurrentSessionId();
     if (await this.sessions.compressor.shouldCompress(sessionId)) {
       await this.sessions.compressor.updateSessionSummary(sessionId);
+    }
+    if (options.forceCurrentSessionCompaction) {
+      await this.sessions.compactCurrentSession();
+      this.memory.manager.clearSessionSnapshot(sessionId);
+      logDaily(`[Session Compact] auto-compacted current session at usage=${this.primaryUsageFraction().toFixed(2)}`);
     }
   }
 

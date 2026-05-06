@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  petagent:
+    build: .
+    container_name: petagent
+    ports:
+      - "${PETAGENT_PORT:-18889}:18889"
+    volumes:
+      - petagent_data:/data
+    environment:
+      - PET_AGENT_HOME_ROOT=/data
+      - PET_AGENT_GATEWAY_HOST=0.0.0.0
+      - PET_AGENT_GATEWAY_PORT=18889
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:18889/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  petagent_data:
+    driver: local

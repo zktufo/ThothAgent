@@ -12,6 +12,8 @@ import type {
   CreateChildSessionInput,
   CreateSessionInput,
   ExtractionMaterial,
+  ArchivedSessionSummaryPayload,
+  ArchivedSessionSummaryHit,
   SessionMessageRecord,
   SessionRecord,
   SessionSearchHit,
@@ -67,6 +69,7 @@ export class SQLiteSessionStore implements SessionStore {
 
   async init() {
     if (this.initialized) return;
+    this.archiveDuplicateActiveSessions();
     this.initialized = true;
   }
 
@@ -118,6 +121,7 @@ export class SQLiteSessionStore implements SessionStore {
         record.endedAt ?? null,
         JSON.stringify(record.metadata),
       );
+      this.archiveRouteSiblingSessions(record);
       this.log(`createSession ${record.sessionKey}`);
       return record;
     } catch (error) {
@@ -128,7 +132,15 @@ export class SQLiteSessionStore implements SessionStore {
 
   async getOrCreateSession(input: CreateSessionInput): Promise<SessionRecord> {
     const existing = await this.getSessionByKey(input.sessionKey);
-    return existing || this.createSession(input);
+    if (!existing) {
+      return this.createSession(input);
+    }
+
+    if (existing.status === "ended" || existing.status === "archived") {
+      return this.reopenSession(existing.id);
+    }
+
+    return existing;
   }
 
   async getSessionById(sessionId: string): Promise<SessionRecord | null> {
@@ -154,7 +166,6 @@ export class SQLiteSessionStore implements SessionStore {
         last_activity_at, ended_at, metadata_json
       FROM sessions
       WHERE session_key = ?
-        AND status IN ('active', 'idle')
       ORDER BY last_activity_at DESC
       LIMIT 1
     `).get(sessionKey) as Record<string, unknown> | undefined;
@@ -296,9 +307,84 @@ export class SQLiteSessionStore implements SessionStore {
     `).run(endedAt, endedAt, sessionId);
   }
 
+  async reopenSession(sessionId: string, reopenedAt: string = new Date().toISOString()): Promise<SessionRecord> {
+    await this.init();
+    this.db.prepare(`
+      UPDATE sessions
+      SET status = 'active', ended_at = NULL, last_activity_at = ?
+      WHERE id = ?
+    `).run(reopenedAt, sessionId);
+
+    const reopened = await this.getSessionById(sessionId);
+    if (!reopened) {
+      throw new Error(`session not found after reopen: ${sessionId}`);
+    }
+    this.archiveRouteSiblingSessions(reopened);
+    return reopened;
+  }
+
   async searchMessages(query: string, options: SessionSearchOptions = {}): Promise<SessionSearchHit[]> {
     await this.init();
     return this.searcher.searchMessages(query, options);
+  }
+
+  async searchArchivedSummaries(query: string, limit: number = 8): Promise<ArchivedSessionSummaryHit[]> {
+    await this.init();
+    const tokens = query
+      .toLowerCase()
+      .split(/[\s,，。！？?!.:：/\\|()[\]{}<>]+/)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 2);
+
+    const rows = this.db.prepare(`
+      SELECT
+        id, session_key, tenant_id, user_id, channel, business_object_type,
+        business_object_id, title, parent_session_id, status, started_at,
+        last_activity_at, ended_at, metadata_json
+      FROM sessions
+      WHERE json_extract(metadata_json, '$.archivedSessionSummary') IS NOT NULL
+      ORDER BY last_activity_at DESC
+      LIMIT 200
+    `).all() as Array<Record<string, unknown>>;
+
+    const candidates: Array<ArchivedSessionSummaryHit | null> = rows
+      .map((row) => {
+        const session = toSessionRecord(row);
+        const markdown = typeof session.metadata.archivedSessionSummary === "string"
+          ? String(session.metadata.archivedSessionSummary)
+          : "";
+        if (!markdown.trim()) return null;
+
+        const haystack = `${session.title}\n${markdown}`.toLowerCase();
+        const keywordHits = tokens.length
+          ? tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0)
+          : 0;
+        if (tokens.length && keywordHits === 0) return null;
+
+        const summary: ArchivedSessionSummaryPayload = {
+          markdown,
+          updatedAt: typeof session.metadata.archivedSessionSummaryUpdatedAt === "string"
+            ? String(session.metadata.archivedSessionSummaryUpdatedAt)
+            : session.lastActivityAt,
+          source: typeof session.metadata.archivedSessionSummarySource === "string"
+            ? session.metadata.archivedSessionSummarySource as ArchivedSessionSummaryPayload["source"]
+            : "fallback",
+        };
+
+        return {
+          session,
+          summary,
+          keywordHits,
+        };
+      });
+
+    return candidates
+      .filter((item): item is ArchivedSessionSummaryHit => item !== null)
+      .sort((a, b) => {
+        if (b.keywordHits !== a.keywordHits) return b.keywordHits - a.keywordHits;
+        return b.session.lastActivityAt.localeCompare(a.session.lastActivityAt);
+      })
+      .slice(0, limit);
   }
 
   async saveSessionSummary(sessionId: string, summary: SessionSummaryPayload): Promise<void> {
@@ -328,6 +414,40 @@ export class SQLiteSessionStore implements SessionStore {
       updatedAt: typeof session.metadata.sessionSummaryUpdatedAt === "string"
         ? String(session.metadata.sessionSummaryUpdatedAt)
         : session.lastActivityAt,
+    };
+  }
+
+  async saveArchivedSessionSummary(sessionId: string, summary: ArchivedSessionSummaryPayload): Promise<void> {
+    await this.init();
+    const session = await this.getSessionById(sessionId);
+    if (!session) throw new Error(`session not found: ${sessionId}`);
+    const metadata = {
+      ...session.metadata,
+      archivedSessionSummary: summary.markdown,
+      archivedSessionSummaryUpdatedAt: summary.updatedAt,
+      archivedSessionSummarySource: summary.source || "fallback",
+    };
+    this.db.prepare(`
+      UPDATE sessions
+      SET metadata_json = ?, last_activity_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(metadata), summary.updatedAt, sessionId);
+  }
+
+  async loadArchivedSessionSummary(sessionId: string): Promise<ArchivedSessionSummaryPayload | null> {
+    const session = await this.getSessionById(sessionId);
+    const markdown = typeof session?.metadata.archivedSessionSummary === "string"
+      ? session.metadata.archivedSessionSummary
+      : "";
+    if (!session || !markdown) return null;
+    return {
+      markdown,
+      updatedAt: typeof session.metadata.archivedSessionSummaryUpdatedAt === "string"
+        ? String(session.metadata.archivedSessionSummaryUpdatedAt)
+        : session.lastActivityAt,
+      source: typeof session.metadata.archivedSessionSummarySource === "string"
+        ? session.metadata.archivedSessionSummarySource as ArchivedSessionSummaryPayload["source"]
+        : "fallback",
     };
   }
 
@@ -368,6 +488,54 @@ export class SQLiteSessionStore implements SessionStore {
 
   async compactSessionMessagesBefore(sessionId: string, cutoffIso: string) {
     await this.init();
+    const rows = this.db.prepare(`
+      SELECT id, content, content_summary
+      FROM messages
+      WHERE session_id = ?
+        AND created_at < ?
+        AND content IS NOT NULL
+    `).all(sessionId, cutoffIso) as Array<Record<string, unknown>>;
+
+    let changed = 0;
+    const updateStmt = this.db.prepare(`
+      UPDATE messages
+      SET content = NULL, content_summary = ?
+      WHERE id = ?
+    `);
+
+    for (const row of rows) {
+      const content = String(row.content ?? "");
+      const summary = String(row.content_summary ?? "") || summarizeText(content, 160);
+      updateStmt.run(summary, String(row.id));
+      if (this.ftsEnabled) {
+        this.db.prepare(`
+          UPDATE messages_fts
+          SET content = '', content_summary = ?
+          WHERE message_id = ?
+        `).run(summary, String(row.id));
+      }
+      changed += 1;
+    }
+
+    return changed;
+  }
+
+  async compactSessionMessagesExceptRecent(sessionId: string, keepRecent: number) {
+    await this.init();
+    const recentRows = this.db.prepare(`
+      SELECT id, created_at
+      FROM messages
+      WHERE session_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(sessionId, keepRecent) as Array<Record<string, unknown>>;
+
+    const cutoffIso = recentRows.length === keepRecent
+      ? String(recentRows[recentRows.length - 1]?.created_at || "")
+      : "";
+
+    if (!cutoffIso) return 0;
+
     const rows = this.db.prepare(`
       SELECT id, content, content_summary
       FROM messages
@@ -534,6 +702,69 @@ export class SQLiteSessionStore implements SessionStore {
     if (this.debug) {
       console.log(`[SQLiteSessionStore] ${message}`);
     }
+  }
+
+  private archiveDuplicateActiveSessions() {
+    const rows = this.db.prepare(`
+      SELECT
+        id, session_key, tenant_id, user_id, channel, business_object_type,
+        business_object_id, title, parent_session_id, status, started_at,
+        last_activity_at, ended_at, metadata_json
+      FROM sessions
+      WHERE status = 'active'
+      ORDER BY tenant_id, user_id, channel, business_object_type, business_object_id, last_activity_at DESC
+    `).all() as Array<Record<string, unknown>>;
+
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const session = toSessionRecord(row);
+      const routeKey = this.routeFingerprint(session);
+      if (seen.has(routeKey)) {
+        this.archiveSession(session.id, session.lastActivityAt);
+        continue;
+      }
+      seen.add(routeKey);
+    }
+  }
+
+  private archiveRouteSiblingSessions(session: SessionRecord) {
+    if (session.status !== "active") return;
+    this.db.prepare(`
+      UPDATE sessions
+      SET status = 'archived', ended_at = COALESCE(ended_at, last_activity_at)
+      WHERE status = 'active'
+        AND id != ?
+        AND tenant_id = ?
+        AND user_id = ?
+        AND channel = ?
+        AND COALESCE(business_object_type, '') = COALESCE(?, '')
+        AND COALESCE(business_object_id, '') = COALESCE(?, '')
+    `).run(
+      session.id,
+      session.tenantId,
+      session.userId,
+      session.channel,
+      session.businessObjectType ?? null,
+      session.businessObjectId ?? null,
+    );
+  }
+
+  private archiveSession(sessionId: string, endedAt: string) {
+    this.db.prepare(`
+      UPDATE sessions
+      SET status = 'archived', ended_at = COALESCE(ended_at, ?)
+      WHERE id = ?
+    `).run(endedAt, sessionId);
+  }
+
+  private routeFingerprint(session: SessionRecord) {
+    return [
+      session.tenantId,
+      session.userId,
+      session.channel,
+      session.businessObjectType || "",
+      session.businessObjectId || "",
+    ].join("\u0001");
   }
 }
 

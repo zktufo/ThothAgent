@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * petagent CLI - Rich OpenClaw-style interface.
+ * petagent CLI - rich terminal interface for PetAgent.
  */
 import chalk from "chalk";
 import fs from "fs";
@@ -10,7 +10,7 @@ import type { ToolTraceEvent } from "../llm/index.js";
 import { ensureUserHomeReady, onboardUserHome } from "../home/index.js";
 import { ModelManager } from "../model_manager/index.js";
 import { runConfigureWizard, configureProviderWithApiKey } from "./configure_wizard.js";
-import { GatewayCliClient, type GatewayStreamEvent } from "./gateway_client.js";
+import { GatewayCliClient, type GatewayConnectionState, type GatewayStreamEvent } from "./gateway_client.js";
 
 const CLI_NAME = "petagent";
 
@@ -100,13 +100,16 @@ async function statusBar(agent: PetAgent) {
   ].join("\n");
 }
 
-function gatewayStatusBar(status: any) {
+function gatewayStatusBar(status: any, connected: boolean) {
   const runtime = status?.runtime || {};
   const usage = runtime.tokenUsage || {};
+  const indexed = runtime.sessionIndex || {};
   const frac = Number(usage.usageFraction || 0);
+  const dot = connected ? C.green("•") : C.gray("•");
+  const label = connected ? C.green("connected") : C.gray("disconnected");
   return [
-    `· ${C.gray("gwy")} ${C.green("•")} ${C.green("connected")}`,
-    `${C.gray(`agent ${runtime.agentId || "default"}`)} ${C.muted("|")} ${C.gray(`session ${runtime.sessionKey || "-"}`)} ${C.muted("|")} ${C.gray(runtime.activeModel || "-")} ${C.muted("|")} ${C.gray(`tokens ${Math.floor((usage.totalTokens || 0) / 1000)}k/${Math.floor((usage.maxTokens || 0) / 1000)}k (${Math.floor(frac * 100)}%)`)}`,
+    `· ${C.gray("gwy")} ${dot} ${label}`,
+    `${C.gray(`agent ${runtime.agentId || "main"}`)} ${C.muted("|")} ${C.gray(`session ${runtime.sessionKey || "-"}`)} ${C.muted("|")} ${C.gray(`index ${indexed.sessionKey || "-"}`)} ${C.muted("|")} ${C.gray(runtime.activeModel || "-")} ${C.muted("|")} ${C.gray(`tokens ${Math.floor((usage.totalTokens || 0) / 1000)}k/${Math.floor((usage.maxTokens || 0) / 1000)}k (${Math.floor(frac * 100)}%)`)}`,
   ].join("\n");
 }
 
@@ -167,7 +170,7 @@ async function runGatewayChat(
     });
 
     try {
-      const accepted = await client.request<any>("chat.send", { message: input, agentId: "default" });
+      const accepted = await client.request<any>("chat.send", { message: input, agentId: "main" });
       runId = String(accepted.runId || "");
     } catch (error) {
       setEventHandler(null);
@@ -539,40 +542,106 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
   const agent = new PetAgent();
   let gatewayEventHandler: ((event: GatewayStreamEvent) => void) | null = null;
   let gatewayClient: GatewayCliClient | null = null;
+  let gatewayConnected = false;
+  let rlRef: import("readline").Interface | null = null;
+  const seenGatewayMessageIds = new Set<string>();
   const defaultGatewayUrl = process.env.PETAGENT_GATEWAY_URL || "ws://127.0.0.1:18889";
+
+  const ingestGatewayMessages = (messages: any[], opts: { renderNewOnly?: boolean } = {}) => {
+    const unseen: any[] = [];
+    for (const message of messages) {
+      const messageId = String(message?.id || "");
+      if (!messageId) continue;
+      if (seenGatewayMessageIds.has(messageId)) continue;
+      seenGatewayMessageIds.add(messageId);
+      unseen.push(message);
+    }
+
+    if (!opts.renderNewOnly || unseen.length === 0) return;
+    renderHistoryMessages(unseen);
+    console.log();
+  };
+
+  const handleGatewayConnectionChange = (state: GatewayConnectionState) => {
+    gatewayConnected = state === "connected";
+    if (!rlRef) return;
+    const marker = gatewayConnected ? C.green("connected") : C.gray("disconnected");
+    console.log(`${C.muted("[gateway]")} ${marker}`);
+    promptInput(rlRef);
+  };
+
+  const handleGlobalGatewayEvent = async (event: GatewayStreamEvent) => {
+    if (!rlRef) return;
+
+    if (event.event === "chat.stream" && gatewayEventHandler) {
+      gatewayEventHandler(event);
+      return;
+    }
+
+    if (event.event === "session.updated") {
+      const payload = event.payload as { sessionKey?: string; sessionId?: string; sessionIndex?: { sessionKey?: string } };
+      if (gatewayClient && gatewayConnected) {
+        const history = await gatewayClient.request<any>("chat.history", {
+          sessionId: payload.sessionId,
+          limit: 24,
+        }).catch(() => null);
+        if (history?.messages?.length) {
+          ingestGatewayMessages(history.messages, { renderNewOnly: true });
+        }
+      }
+      console.log(`${C.muted("[gateway]")} ${C.cyan("session synced")} ${C.gray(payload.sessionKey || "-")} ${C.muted("|")} ${C.gray(`index ${payload.sessionIndex?.sessionKey || payload.sessionKey || "-"}`)}`);
+      promptInput(rlRef);
+      return;
+    }
+  };
+
   try {
-    gatewayClient = new GatewayCliClient(defaultGatewayUrl, (event) => gatewayEventHandler?.(event));
+    gatewayClient = new GatewayCliClient(
+      defaultGatewayUrl,
+      (event) => {
+        void handleGlobalGatewayEvent(event);
+      },
+      handleGatewayConnectionChange,
+    );
     await gatewayClient.connect(500);
   } catch {
     gatewayClient = null;
+    gatewayConnected = false;
   }
   const skills = agent.skills.listAll();
-  const gatewayStatus = gatewayClient
+  const gatewayStatus = gatewayClient && gatewayConnected
     ? await gatewayClient.request<any>("status").catch(() => null)
     : null;
   const initialSession = gatewayStatus
-    ? { sessionKey: gatewayStatus.runtime.sessionKey }
+    ? {
+      sessionKey: gatewayStatus.runtime.sessionKey,
+      indexedSessionKey: gatewayStatus.runtime.sessionIndex?.sessionKey || gatewayStatus.runtime.sessionKey,
+    }
     : await agent.runtime.sessions.getCurrentSession();
 
   console.log(`${C.yellow(`${CLI_NAME} tui`)} ${C.muted("—")} ${C.yellow(`agent ${homePaths.agentName}`)} ${C.muted("—")} ${C.yellow(`session ${initialSession.sessionKey}`)}`);
   console.log();
   console.log(C.gray(`session ${initialSession.sessionKey}`));
+  if ("indexedSessionKey" in initialSession) {
+    console.log(C.gray(`session index ${initialSession.indexedSessionKey || "-"}`));
+  }
   console.log();
   console.log(`${C.green("✓")} Active model: ${C.bold(gatewayStatus?.runtime?.activeModel || agent.runtime.lastProviderLabel)}`);
   console.log(`${C.green("✓")} Skills loaded: ${skills.length}`);
   console.log(`${C.green("✓")} User data: ${C.muted(homePaths.agentDataDir)}`);
   console.log(`${C.green("✓")} Workspace: ${C.muted(homePaths.workspaceDir)}`);
   console.log(`${C.green("✓")} Config: ${C.muted(homePaths.petAgentConfigPath)}`);
-  if (gatewayClient) {
+  if (gatewayClient && gatewayConnected) {
     console.log(`${C.green("✓")} Gateway: ${C.muted(defaultGatewayUrl)}`);
   }
   console.log(skills.map(s => `${C.green("✓")} ${C.cyan(s.commands[0] || s.name)} ${C.muted("—")} ${C.muted(s.description)}`).join("\n"));
-  console.log(gatewayStatus ? gatewayStatusBar(gatewayStatus) : await statusBar(agent));
+  console.log(gatewayClient ? gatewayStatusBar(gatewayStatus, gatewayConnected) : await statusBar(agent));
   console.log();
 
-  if (gatewayClient) {
+  if (gatewayClient && gatewayConnected) {
     const history = await gatewayClient.request<any>("chat.history", { limit: 16 }).catch(() => null);
     if (history?.messages?.length) {
+      ingestGatewayMessages(history.messages);
       console.log(panel(C.muted(`Loaded ${history.messages.length} messages from gateway history`), { title: "Gateway History", color: (s) => s }));
       renderHistoryMessages(history.messages);
       console.log();
@@ -585,6 +654,7 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
     output: process.stdout,
     prompt: " ",
   });
+  rlRef = rl;
   readline.emitKeypressEvents(process.stdin, rl);
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
@@ -746,15 +816,24 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
     // ── Status ─────────────────────────────────────────────
     if (["status", "状态", "/status", "/stat"].includes(input)) {
       if (gatewayClient) {
-        const status = await gatewayClient.request<any>("status");
-        console.log([
-          `${C.blue("Model")}    ${status.runtime.activeModel}`,
-          `${C.blue("Route")}    ${status.runtime.modelRoute.primary}`,
-          `${C.blue("Gateway")}  ws://${status.gateway.host}:${status.gateway.port}`,
-          `${C.blue("Session")}  ${status.runtime.sessionKey}`,
-          `${C.blue("Tokens")}   ${status.runtime.tokenUsage.totalTokens} / ${status.runtime.tokenUsage.maxTokens} (${Math.floor((status.runtime.tokenUsage.usageFraction || 0) * 100)}%)`,
-          `${C.blue("Clients")}  ${status.clients}`,
-        ].join("\n"));
+        if (gatewayConnected) {
+          const status = await gatewayClient.request<any>("status");
+          console.log([
+            `${C.blue("Model")}    ${status.runtime.activeModel}`,
+            `${C.blue("Route")}    ${status.runtime.modelRoute.primary}`,
+            `${C.blue("Gateway")}  ws://${status.gateway.host}:${status.gateway.port} ${C.green("(connected)")}`,
+            `${C.blue("Session")}  ${status.runtime.sessionKey}`,
+            `${C.blue("Tokens")}   ${status.runtime.tokenUsage.totalTokens} / ${status.runtime.tokenUsage.maxTokens} (${Math.floor((status.runtime.tokenUsage.usageFraction || 0) * 100)}%)`,
+            `${C.blue("Clients")}  ${status.clients}`,
+          ].join("\n"));
+        } else {
+          const session = await agent.runtime.sessions.getCurrentSession();
+          console.log([
+            `${C.blue("Gateway")}  ${defaultGatewayUrl} ${C.gray("(disconnected)")}`,
+            `${C.blue("Session")}  ${session.sessionKey}`,
+            `${C.blue("Mode")}     local fallback`,
+          ].join("\n"));
+        }
       } else {
         const u = agent.llm.usage;
         const frac = u.usageFraction;
@@ -785,7 +864,7 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
 
     // ── History ─────────────────────────────────────────────
     if (["history", "历史", "/history", "/hi"].includes(input)) {
-      const hist = gatewayClient
+      const hist = gatewayClient && gatewayConnected
         ? (await gatewayClient.request<any>("sessions.list", { limit: 12 })).items
         : await agent.runtime.sessions.listSessions({ limit: 12, status: "all" });
       if (!hist.length) {
@@ -802,7 +881,7 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
 
     // ── End current business session ──────────────────────
     if (["end", "结束", "/end", "/done", "完成会话"].includes(input)) {
-      if (gatewayClient) {
+      if (gatewayClient && gatewayConnected) {
         const result = await gatewayClient.request<any>("sessions.patch", { action: "end" });
         console.log(botPanel(
           result.ended
@@ -811,7 +890,7 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
         ));
       } else {
         const extraction = await agent.runtime.endCurrentBusinessSession();
-        const next = await agent.runtime.sessions.createChildSession("结束后的新会话", {
+        const next = await agent.runtime.sessions.createChildSession(homePaths.agentName, {
           startedAfterEnd: extraction?.session.id || null,
         });
         await agent.memory.clearSession();
@@ -828,7 +907,7 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
 
     // ── Reset ───────────────────────────────────────────────
     if (["reset", "重置", "/reset", "/clear", "清空"].includes(input)) {
-      if (gatewayClient) {
+      if (gatewayClient && gatewayConnected) {
         const reset = await gatewayClient.request<any>("sessions.patch", { action: "reset" });
         console.log(botPanel(`🔄 会话已重置\n新的 session: ${reset.next.sessionKey}`));
       } else {
@@ -859,10 +938,13 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
     // ── Process ────────────────────────────────────────────
     const t0 = Date.now();
     try {
-      console.log(gatewayClient ? gatewayStatusBar(await gatewayClient.request<any>("status")) : await statusBar(agent));
+      const preflightGatewayStatus = gatewayClient && gatewayConnected
+        ? await gatewayClient.request<any>("status").catch(() => null)
+        : null;
+      console.log(gatewayClient ? gatewayStatusBar(preflightGatewayStatus, gatewayConnected) : await statusBar(agent));
       console.log();
       const thinking = startThinkingAnimation("thinking");
-      const result = await (gatewayClient
+      const result = await (gatewayClient && gatewayConnected
         ? runGatewayChat(gatewayClient, displayInput, (handler) => { gatewayEventHandler = handler; })
         : agent.thinkWithTrace(displayInput, imagePath))
         .finally(() => thinking.stop());
@@ -882,14 +964,17 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
       }
       console.log(botPanel(renderMarkdown(response)));
       console.log();
-      if (gatewayClient) {
+      if (gatewayClient && gatewayConnected) {
         const status = await gatewayClient.request<any>("status");
         console.log(`  ${C.muted("⏱ " + elapsed + "s | tokens: " + Math.floor((status.runtime.tokenUsage.totalTokens || 0) / 1000) + "k")}`);
       } else {
         console.log(`  ${C.muted("⏱ " + elapsed + "s | tokens: " + Math.floor(agent.llm.usage.totalTokens / 1000) + "k")}`);
       }
       console.log();
-      console.log(gatewayClient ? gatewayStatusBar(await gatewayClient.request<any>("status")) : await statusBar(agent));
+      const postGatewayStatus = gatewayClient && gatewayConnected
+        ? await gatewayClient.request<any>("status").catch(() => null)
+        : null;
+      console.log(gatewayClient ? gatewayStatusBar(postGatewayStatus, gatewayConnected) : await statusBar(agent));
     } catch (e: any) {
       console.log(panel(`${C.red("⚠️ 出错:")} ${e.message}`, { borderColor: "red", color: (s) => s }));
       console.log();
