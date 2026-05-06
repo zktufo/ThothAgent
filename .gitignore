@@ -2,3 +2,8 @@ dist/
 node_modules/
 .DS_Store
 .pet-agent-dev/
+chroma_db/
+memory/daily/
+*.sqlite-shm
+*.sqlite-wal
+/.PetAgent/

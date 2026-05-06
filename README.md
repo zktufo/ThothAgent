@@ -1,124 +1,126 @@
-# 🐾 Pet Agent
+# ThothAgent
 
-> 毛孩子健康顾问 — 基于 MiniMax LLM 的宠物健康 AI 助手，支持 CLI / MCP / TUI 三种运行模式
+> A self-improving framework for domain-specific AI agents with layered memory, adaptive retrieval, and session-aware orchestration.
 
-```
-npm install -g pet-agent
-petagent tui            # 进入对话
-petagent --help         # 查看全部命令
-```
+ThothAgent is a configurable runtime for building vertical AI copilots that improve over time through persistent memory, provider-based retrieval, tool feedback loops, and structured session lifecycle management.
 
-## 三种运行模式
+## Why ThothAgent
 
-| 模式 | 命令 | 说明 |
-|------|------|------|
-| **CLI** | `petagent tui` | 命令行对话，专注快速问答 |
-| **TUI** | `petagent tui` | 键盘导航的终端界面 |
-| **MCP** | `petagent mcp` | 作为 MCP Server 接入 VSCode / Cursor |
+- Build domain-specific agents instead of one-off chatbots
+- Persist long-term memory across sessions with layered memory architecture
+- Route memory through pluggable external providers instead of hard-coded storage
+- Keep session continuity with SQLite-backed history, summaries, and compaction
+- Combine tools, retrieval, and memory into a single agent runtime
+- Evolve agent behavior over time through explicit memory writes and conversation insights
 
-## 核心能力
+## Core Capabilities
 
-```
-🐾 宠物健康初筛     — 症状分析 + 紧急度判断 + 就医建议
-🔍 多层记忆系统     — 用户画像 / 领域知识 / 会话摘要 / 检索记忆
-📚 Session 管理     — SQLite 持久化 + 摘要压缩 + FTS 全文检索
-🛠️ 工具调用         — 宠物图片分析 / 药品真伪查询 / 联网搜索
-🔌 MCP 协议        — 接入 AI IDE，作为编程助手使用
-```
+- Layered memory: `MEMORY.md`, `USER.md`, `DOMAIN.md`, working state, and external retrieval
+- Adaptive retrieval: provider-driven `memory_search` with hybrid lexical/embedding scoring
+- Session orchestration: active session routing, indexing, archival summaries, and compaction
+- Tool runtime: native tool catalog, secure execution harness, and structured trace logging
+- Pluggable providers: local file provider by default, extensible for remote memory backends
+- Multi-surface control: CLI, TUI, gateway, and web control UI
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 安装
-git clone https://github.com/your-org/pet-agent-ts.git
-cd pet-agent-ts
-npm install && npm run build
-
-# 配置
-cp .env.example .env
-# 填入 MINIMAX_API_KEY
-
-# 对话
-petagent tui
-
-# TUI 模式
-petagent tui
-
-# MCP 模式（接入 VSCode）
-petagent mcp
+git clone https://github.com/zktufo/ThothAgent.git
+cd ThothAgent
+npm install
+npm run build
+node dist/cli/main.js tui
 ```
 
-## 架构总览
+## Project Structure
 
-```
+```text
 src/
-├── agent/           # Agent 核心：prompt 构造、memory 格式编排
-├── cli/             # CLI 入口 + 命令解析
-├── core/            # MCP 协议实现、Skill 注册机制
-├── home/            # 用户工作区（SOUL/MEMORY/USER）初始化
-├── llm/             # LLM 调用封装（支持 MiniMax / OpenAI / Anthropic）
-├── memory/          # 分层记忆系统
-│   └── layered/     #   - user_profile / domain_context / session_summary / retrieval
-├── model_manager/   # 多模型路由与降级策略
-├── runtime/         # 工具运行时 + ToolManager
-├── session/         # Session 管理
-│   ├── SQLiteSessionStore   # SQLite 持久化
-│   ├── SessionCompressor    # 自动摘要压缩
-│   ├── SessionSearch        # FTS 全文检索
-│   └── SessionRouter        # 多会话路由
-├── action/          # 工具调用审计日志
-├── artifacts/       # 大型结果（图片/报告）存储
-└── tools/           # 内置工具注册
+├── agent/              # prompt composition and agent-facing memory formatting
+├── cli/                # CLI, TUI entrypoints, and configure flows
+├── core/               # MCP integration and skill registry
+├── gateway/            # websocket/http gateway and web control surface backend
+├── harness/            # guarded exec/read/write tool harness
+├── home/               # ~/.PetAgent bootstrap and runtime home layout
+├── infra/              # logging, metrics, scheduler, tracing, maintenance
+├── llm/                # provider adapters and tool-loop runtime
+├── memory/             # unified memory facade
+│   └── layered/        # layered memory, retrieval, providers, and prompt injection
+├── model_manager/      # model routing and provider configuration
+├── runtime/            # tool manager and agent runtime loop
+├── session/            # session store, compression, routing, archiving
+└── tools/              # built-in tool adapters
 ```
 
-## Session 持久化
+## Runtime Data Layout
+
+```text
+~/.PetAgent/
+├── AGENTS.md
+├── PetAgent.json
+├── agents/
+│   └── main/
+│       ├── SOUL.md
+│       ├── USER.md
+│       ├── MEMORY.md
+│       ├── DOMAIN.md
+│       ├── memory/
+│       │   ├── daily/
+│       │   └── layered/
+│       │       ├── retrieval_memory.db
+│       │       └── working_state.json
+│       └── sessions/
+│           ├── session.sqlite
+│           └── session.json
+└── workspace/
+```
+
+## External Memory Providers
+
+ThothAgent treats external memory as a provider capability rather than a fixed local database.
+
+- Default provider: `local-file`
+- Config path: `memory.externalProvider` in `~/.PetAgent/PetAgent.json`
+- Search path: `memory_search` calls the currently configured provider abstraction
+- Future-ready: remote providers such as Honcho can be added without rewriting the tool layer
+
+## Self-Improvement Loop
+
+ThothAgent is designed to improve over time through a simple but extensible loop:
+
+1. The agent completes a turn
+2. High-value turns trigger background memory persistence
+3. Explicit `memory` writes are stored as durable retrieval records
+4. Session summaries and conversation insights become searchable long-term memory
+5. Later turns can recall and reuse those insights through provider-backed retrieval
+
+## Web Control UI
+
+The built-in web UI provides:
+
+- chat surface with live session sync
+- dashboard view for runtime state
+- Apple-inspired glass UI system
+- multimodal input entrypoints
+- animated message timeline and trace visibility
+
+## Development
 
 ```bash
-~/.PetAgent/agents/<agent>/sessions/session.sqlite
+npm run build
+npm run typecheck
+npm run memory:test
 ```
 
-支持 FTS5 全文搜索，自动摘要压缩（每 N 轮触发），超过 30 天的旧会话自动清理原始消息但保留摘要。
+## GitHub About
 
-## 分层记忆
+Suggested description:
 
-| 层级 | 文件 | 用途 | 更新频率 |
-|------|------|------|---------|
-| 用户画像 | `user_profile.json` | 宠物种类、年龄、主人口偏好 | 低 |
-| 领域知识 | `domain_context.md` | 垂直业务规则、用药安全边界 | 低 |
-| 会话摘要 | `session_summary.md` | 当前会话关键点 | 中 |
-| 检索记忆 | `retrieval_memory.jsonl` | 长期经验和历史案例 | 按需 |
+`Self-improving domain agents with layered memory, adaptive retrieval, and session-aware orchestration.`
 
-## CLI 命令
+Suggested topics:
 
-```bash
-petagent tui [options]       # 进入对话
-  --model <name>    指定模型（minimax / openai / claude）
-  --session <id>    指定会话 ID
-
-petagent tui               # TUI 界面
-
-petagent mcp [options]     # 启动 MCP Server
-  --port <port>    监听端口（默认 3100）
-  --stdio          以 stdio 模式运行（用于 IDE 集成）
-
-petagent memory <cmd>       # 记忆管理
-  search <query>    搜索历史记忆
-  list             列出所有会话
-
-petagent session <cmd>      # 会话管理
-  list             列出所有会话
-  export <id>      导出会话记录
-```
-
-## 环境变量
-
-```env
-MINIMAX_API_KEY=      # MiniMax API Key（主要 LLM）
-OPENAI_API_KEY=       # OpenAI API Key（备用）
-ANTHROPIC_API_KEY=    # Anthropic API Key（备用）
-LOG_LEVEL=info        # 日志级别：debug / info / warn / error
-DATA_DIR=~/.PetAgent   # 数据目录
-```
+`agent-framework`, `vertical-ai`, `memory`, `retrieval`, `session-management`, `tool-use`, `self-improving`, `typescript`
 
 ## License
 

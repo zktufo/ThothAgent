@@ -1,7 +1,7 @@
 {
-  "name": "pet-agent",
+  "name": "thoth-agent",
   "version": "1.0.0",
-  "description": "🐾 毛孩子健康顾问 - 基于 MiniMax LLM 的宠物健康 AI 助手",
+  "description": "A self-improving framework for domain-specific AI agents with layered memory, adaptive retrieval, and session-aware orchestration.",
   "main": "dist/cli/main.js",
   "type": "module",
   "bin": {
@@ -17,11 +17,14 @@
     "eval:memory-ab": "npm run build && node dist/evals/memory_ab_test.js"
   },
   "keywords": [
-    "pet",
-    "health",
     "ai",
-    "minimax",
     "agent",
+    "vertical-ai",
+    "domain-specific",
+    "memory",
+    "retrieval",
+    "session-orchestration",
+    "self-improving",
     "cli"
   ],
   "license": "MIT",
