@@ -284,7 +284,7 @@ export function parseEvalArgs(args: string[]): EvalConfig {
   const base = presetDefaults(preset);
   const homeRoot = map.get("home-root")
     ? path.resolve(String(map.get("home-root")))
-    : fs.mkdtempSync(path.join(os.tmpdir(), "petagent-memory-bench-"));
+    : fs.mkdtempSync(path.join(os.tmpdir(), "thothagent-memory-bench-"));
 
   return {
     preset,

@@ -12,7 +12,7 @@ import { estimateTokens } from "./prompt_builder.js";
 
 /**
  * Character limits for different memory kinds.
- * Based on Hermes but adapted for pet-agent context.
+ * Based on Hermes but adapted for ThothAgent context.
  */
 export const MEMORY_LIMITS = {
   best_try: 800,

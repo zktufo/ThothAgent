@@ -4,7 +4,7 @@
  * 调 iMac M1 上跑着的 Python RAG 服务。
  * 混合搜索（bge-small-zh 向量 + BM25 关键词 + RRF 融合）。
  *
- * RAG 服务生命周期由 pet-agent gateway 自动管理：
+ * RAG 服务生命周期由 ThothAgent gateway 自动管理：
  *   gateway start()  → 自动 spawn Python RAG 子进程
  *   gateway stop()   → 自动 SIGTERM 子进程
  *
@@ -12,7 +12,7 @@
  *   cd ~/workspace-qiaobao && source venv_rag/bin/activate
  *   python3 agentic_rag_demo.py --api 0.0.0.0 8000
  *
- * 默认文档目录：~/.PetAgent/RAG（放 PDF/MD/TXT 等知识文件）
+ * 默认文档目录：~/.ThothAgent/RAG（放 PDF/MD/TXT 等知识文件）
  *
  * 配置环境变量：
  *   LOCAL_RAG_URL=http://localhost:8000    # 默认自动匹配 gateway 内嵌的 RAG

@@ -1,17 +1,17 @@
 version: "3.8"
 
 services:
-  petagent:
+  thothagent:
     build: .
-    container_name: petagent
+    container_name: thothagent
     ports:
       - "${PETAGENT_PORT:-18889}:18889"
     volumes:
-      - petagent_data:/data
+      - thothagent_data:/data
     environment:
-      - PET_AGENT_HOME_ROOT=/data
-      - PET_AGENT_GATEWAY_HOST=0.0.0.0
-      - PET_AGENT_GATEWAY_PORT=18889
+      - THOTH_AGENT_HOME_ROOT=/data
+      - THOTH_AGENT_GATEWAY_HOST=0.0.0.0
+      - THOTH_AGENT_GATEWAY_PORT=18889
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -24,5 +24,5 @@ services:
       start_period: 10s
 
 volumes:
-  petagent_data:
+  thothagent_data:
     driver: local

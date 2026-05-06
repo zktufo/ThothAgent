@@ -14,6 +14,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   type HarnessPolicy,
@@ -412,7 +413,7 @@ export class ToolHarness {
         cwd: this.sandbox.getProjectDir(),
         env: {
           PATH: "/usr/bin:/bin:/usr/local/bin",
-          HOME: process.cwd(),
+          HOME: os.homedir(),
         },
         timeout: timeoutSec * 1000,
         stdio: ["ignore", "pipe", "pipe"],

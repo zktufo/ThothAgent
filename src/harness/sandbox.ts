@@ -24,6 +24,7 @@ const DEFAULT_ALLOWED_COMMANDS = [
   /^git\b/,
   /^npm\b/,
   /^node\b/,
+  /^cd\b/,
   /^ls\b/,
   /^cat\b/,
   /^pwd\b/,
@@ -72,7 +73,6 @@ const DEFAULT_BLOCKED_COMMANDS = [
   /\beval\b/,
   /\bexec\b/,
   /\bsource\b/,
-  /\/dev\//,
   /\|\s*bash\b/,
   /\|\s*sh\b/,
   /\|\s*zsh\b/,
@@ -142,7 +142,7 @@ const DEFAULT_BLOCKED_COMMANDS = [
 const DEFAULT_ALLOWED_PATHS = [
   process.cwd(),                    // project directory
   path.resolve(os.homedir(), "clawd"),
-  path.resolve(os.homedir(), ".PetAgent", "workspace"),
+  path.resolve(os.homedir(), ".ThothAgent", "workspace"),
   "/tmp",
 ];
 
@@ -234,10 +234,11 @@ export class CommandSandbox {
     }
 
     const trimmed = command.trim().replace(/\s+/g, " ");
+    const commandForBlocklist = stripBenignRedirections(trimmed);
 
     // Step 1: blocklist — checked first, blocks anything dangerous
     for (const pattern of this.blockedCommands) {
-      if (pattern.test(trimmed)) {
+      if (pattern.test(commandForBlocklist)) {
         return {
           ok: false,
           reason: `Command blocked by pattern: ${pattern}`,
@@ -326,4 +327,10 @@ export class CommandSandbox {
   getProjectDir(): string {
     return process.cwd();
   }
+}
+
+function stripBenignRedirections(command: string) {
+  return command
+    .replace(/\s+2>\s*\/dev\/null\b/g, "")
+    .replace(/\s+2>\/dev\/null\b/g, "");
 }

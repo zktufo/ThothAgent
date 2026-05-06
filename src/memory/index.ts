@@ -97,9 +97,9 @@ export class MemoryStore {
 
   constructor(options: MemoryStoreOptions = {}) {
     this.homePaths = options.homePaths || resolveUserHomePaths();
-    this.namespace = options.namespace || process.env.PET_AGENT_MEMORY_NAMESPACE || "default";
-    this.sessionId = options.sessionId || process.env.PET_AGENT_SESSION_ID || "current";
-    this.userId = options.userId || process.env.PET_AGENT_USER_ID || this.deriveUserId();
+    this.namespace = options.namespace || process.env.THOTH_AGENT_MEMORY_NAMESPACE || "default";
+    this.sessionId = options.sessionId || process.env.THOTH_AGENT_SESSION_ID || "current";
+    this.userId = options.userId || process.env.THOTH_AGENT_USER_ID || this.deriveUserId();
     this.fileMemory = new FileMemory({
       rootDir: options.layeredRootDir || this.homePaths.layeredDir,
       domainMemoryPath: this.homePaths.domainContextPath,
@@ -123,7 +123,7 @@ export class MemoryStore {
     ], {
       sessionId: this.sessionId,
       maxMemoryTokens: 600,
-      debug: process.env.PET_AGENT_DEBUG_MEMORY === "1",
+      debug: process.env.THOTH_AGENT_DEBUG_MEMORY === "1",
     });
   }
 

@@ -22,6 +22,7 @@ import { SessionManager } from "../session/index.js";
 import { ragSearch } from "../tools/local_rag.js";
 import { clipCompactText, isRecallHistoryQuery } from "../memory/utils.js";
 import { validateMemoryContent, checkMemoryLength, scanMemoryContent, findDuplicate, MEMORY_LIMITS } from "../memory/layered/safety.js";
+import { ModelManager } from "../model_manager/index.js";
 import {
   ToolHarness,
   type HarnessPolicy,
@@ -33,6 +34,13 @@ import { buildBuiltinLLMToolDefinitions } from "./tool_catalog.js";
 export interface ToolExecutionContext {
   fallbackUserInput: string;
   imagePath?: string;
+  /** ReAct step 序号 */
+  step?: number;
+}
+
+function sanitizeAgentId(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "main";
 }
 
 function normalizeSearchQuery(input: Record<string, any>, fallback: string): Record<string, any> {
@@ -41,6 +49,20 @@ function normalizeSearchQuery(input: Record<string, any>, fallback: string): Rec
       ? input.query.trim()
       : fallback,
   };
+}
+
+function summarizeToolStats(actions: Array<{ toolName?: string | null; outputStatus?: string | null }>) {
+  const map = new Map<string, { tool: string; total: number; success: number; error: number; successRate: string }>();
+  for (const action of actions) {
+    const tool = action.toolName || "unknown";
+    const current = map.get(tool) || { tool, total: 0, success: 0, error: 0, successRate: "100%" };
+    current.total += 1;
+    if (action.outputStatus === "error") current.error += 1;
+    else current.success += 1;
+    current.successRate = `${Math.round((current.success / current.total) * 1000) / 10}%`;
+    map.set(tool, current);
+  }
+  return [...map.values()].sort((a, b) => b.total - a.total || a.tool.localeCompare(b.tool));
 }
 
 /**
@@ -52,6 +74,7 @@ function normalizeSearchQuery(input: Record<string, any>, fallback: string): Rec
  */
 export class ToolManager {
   private harness: ToolHarness;
+  private modelManager: ModelManager;
 
   constructor(
     private memory: MemoryStore,
@@ -61,6 +84,7 @@ export class ToolManager {
     harness?: ToolHarness,
   ) {
     this.harness = harness ?? new ToolHarness();
+    this.modelManager = new ModelManager({ homePaths: this.memory.homePaths });
   }
 
   /**
@@ -84,7 +108,8 @@ export class ToolManager {
     context: ToolExecutionContext,
   ): Promise<LLMToolExecutionResult> {
     await this.sessions.appendToolUse(toolName, input, {
-      fallbackUserInput: context.fallbackUserInput,
+      metadata: { fallbackUserInput: context.fallbackUserInput },
+      step: context.step,
     });
 
     const result = await this.runTool(toolName, input, context);
@@ -92,6 +117,7 @@ export class ToolManager {
     await this.sessions.appendToolResult(toolName, result.message, {
       success: result.success,
       error: result.error,
+      step: context.step,
       metadata: { input },
     });
 
@@ -103,7 +129,7 @@ export class ToolManager {
    */
   private buildExecCtx(context: ToolExecutionContext): ExecutionContext {
     return {
-      agentId: "pet-agent",
+      agentId: this.memory.homePaths.agentName,
       sessionId: context.fallbackUserInput?.slice(0, 64) || "unknown",
       userInput: context.fallbackUserInput,
       policy: {}, // uses harness defaults
@@ -170,6 +196,75 @@ export class ToolManager {
 
       const result = await this.harness.writeFile(filePath, content, execCtx, { append });
       return this.toLLMResult(result);
+    }
+
+    // --- EXISTING: memory tool ---
+    if (toolName === "agent_manage") {
+      const action = String(input.action || "").trim();
+      if (action === "list") {
+        const agents = this.modelManager.listAgents();
+        const message = agents.length
+          ? [
+            "## Agents",
+            ...agents.map((agent, index) => `${index + 1}. id=${agent.id} name=${agent.name} model=${agent.model.primary}`),
+          ].join("\n")
+          : "当前还没有注册任何 agent。";
+        return { success: true, data: agents, message };
+      }
+
+      if (action === "create") {
+        const displayName = String(input.display_name || "").trim();
+        const description = String(input.description || "").trim();
+        const preferredId = String(input.agent_id || displayName || description || "main");
+        const agentId = sanitizeAgentId(preferredId);
+        if (agentId === "main") {
+          return { success: false, error: "invalid_agent_id", message: "⚠️ 新 agent 不能使用 main 作为 ID，请提供更具体的 agent_id 或 display_name。" };
+        }
+
+        const primaryModel = typeof input.primary_model === "string" && input.primary_model.trim()
+          ? input.primary_model.trim()
+          : undefined;
+        const fallbackModels = Array.isArray(input.fallback_models)
+          ? input.fallback_models.map((item) => String(item).trim()).filter(Boolean)
+          : undefined;
+
+        const ensured = await this.modelManager.ensureAgentRegistered(agentId, {
+          displayName: displayName || agentId,
+          primaryModel,
+          fallbackModels,
+        });
+
+        if (description) {
+          const fs = await import("fs");
+          let domainDoc = "";
+          try {
+            domainDoc = fs.readFileSync(ensured.paths.domainContextPath, "utf-8");
+          } catch {}
+          const nextDoc = [
+            domainDoc.trim() || "# DOMAIN.md",
+            "",
+            `## Agent Scope`,
+            `- Agent ID: ${ensured.agentId}`,
+            `- Display Name: ${displayName || ensured.agentId}`,
+            `- Description: ${description}`,
+          ].join("\n");
+          fs.writeFileSync(ensured.paths.domainContextPath, `${nextDoc.trim()}\n`, "utf-8");
+        }
+
+        return {
+          success: true,
+          data: ensured,
+          message: [
+            `✅ 已创建新 agent：${ensured.agentId}`,
+            `- 路径: ${ensured.paths.agentRoot}`,
+            `- 工作区: ${ensured.paths.workspaceDir}`,
+            `- 主模型: ${ensured.model.primary}`,
+            description ? `- 说明: ${description}` : "",
+          ].filter(Boolean).join("\n"),
+        };
+      }
+
+      return { success: false, error: "invalid_action", message: "⚠️ agent_manage 只支持 action=create 或 action=list。" };
     }
 
     // --- EXISTING: memory tool ---
@@ -293,6 +388,59 @@ export class ToolManager {
       return { success: true, data: hits, message };
     }
 
+    if (toolName === "tool_stats") {
+      const limit = typeof input.limit === "number" ? Math.max(1, Math.min(20, input.limit)) : 5;
+      const actions = await this.sessions.listSessionActions();
+      const results = actions.filter((action) => action.actionType === "tool_result" && action.toolName);
+      const uses = actions.filter((action) => action.actionType === "tool_use" && action.toolName);
+      const successCount = results.filter((action) => action.outputStatus === "success").length;
+      const failureCount = results.filter((action) => action.outputStatus === "error").length;
+      const totalResults = results.length;
+      const successRate = totalResults > 0 ? successCount / totalResults : 1;
+      const byTool = summarizeToolStats(results);
+      const inFlight = Math.max(0, uses.length - results.length);
+      const recentFailures = results
+        .filter((action) => action.outputStatus === "error")
+        .slice(-limit)
+        .reverse()
+        .map((action) => ({
+          tool: action.toolName,
+          step: action.step,
+          at: action.createdAt,
+          summary: action.outputSummary,
+        }));
+
+      const percent = `${Math.round(successRate * 1000) / 10}%`;
+      const lines = [
+        "## Tool 调用统计",
+        `- 当前 session 已完成 tool result: ${totalResults}`,
+        `- 成功: ${successCount}`,
+        `- 失败: ${failureCount}`,
+        `- 成功率: ${percent}`,
+        `- 进行中/未配对 tool_use: ${inFlight}`,
+        "",
+        "### 按工具统计",
+        ...byTool.map((item) => `- ${item.tool}: total=${item.total}, success=${item.success}, error=${item.error}, successRate=${item.successRate}`),
+        recentFailures.length ? "" : "",
+        recentFailures.length ? "### 最近失败" : "",
+        ...recentFailures.map((item) => `- [${item.at}] ${item.tool}${item.step ? `#${item.step}` : ""}: ${item.summary || "(empty)"}`),
+      ].filter(Boolean);
+
+      return {
+        success: true,
+        data: {
+          totalResults,
+          successCount,
+          failureCount,
+          successRate,
+          inFlight,
+          byTool,
+          recentFailures,
+        },
+        message: lines.join("\n"),
+      };
+    }
+
     // --- EXISTING: verify_drug ---
     if (toolName === "verify_drug") {
       const barcode = typeof input.barcode === "string"
@@ -321,7 +469,7 @@ export class ToolManager {
     }
 
     // --- RAG: 知识库查询（外挂 Python 混合检索服务） ---
-    if (toolName === "pet_symptom_query" || toolName === "rag_query") {
+    if (toolName === "rag_query") {
       const query = typeof input.query === "string" && input.query.trim()
         ? input.query.trim()
         : context.fallbackUserInput;

@@ -2,13 +2,13 @@
  * ModelManager owns model/provider configuration.
  *
  * Responsibilities:
- * - load/save `~/.PetAgent/PetAgent.json`
+ * - load/save `~/.ThothAgent/ThothAgent.json`
  * - resolve primary/fallback model route for the current agent
  * - instantiate provider clients from config
  * - provide CLI-friendly read/update helpers
  */
 import fs from "fs";
-import { resolveUserHomePaths, type UserHomePaths } from "../home/index.js";
+import { ensureAgentHome, resolveUserHomePaths, type UserHomePaths } from "../home/index.js";
 import {
   type LLMProvider,
   AnthropicCompatibleLLM,
@@ -49,7 +49,7 @@ export interface AgentModelConfig {
   fallbacks?: string[];
 }
 
-export interface PetAgentConfig {
+export interface ThothAgentConfig {
   meta?: Record<string, any>;
   memory?: {
     externalProvider?: {
@@ -83,14 +83,14 @@ export class ModelManager {
 
   constructor(options: { homePaths?: UserHomePaths } = {}) {
     this.homePaths = options.homePaths || resolveUserHomePaths();
-    this.configPath = this.homePaths.petAgentConfigPath;
+    this.configPath = this.homePaths.thothAgentConfigPath;
   }
 
-  loadConfig(): PetAgentConfig {
-    return JSON.parse(fs.readFileSync(this.configPath, "utf-8")) as PetAgentConfig;
+  loadConfig(): ThothAgentConfig {
+    return JSON.parse(fs.readFileSync(this.configPath, "utf-8")) as ThothAgentConfig;
   }
 
-  saveConfig(config: PetAgentConfig) {
+  saveConfig(config: ThothAgentConfig) {
     fs.writeFileSync(this.configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
   }
 
@@ -122,6 +122,51 @@ export class ModelManager {
     return candidates
       .map((candidate) => this.instantiateRoute(candidate))
       .filter((provider): provider is LLMProvider => provider !== null);
+  }
+
+  async ensureAgentRegistered(agentId: string, options: {
+    displayName?: string;
+    workspace?: string;
+    agentDir?: string;
+    primaryModel?: string;
+    fallbackModels?: string[];
+  } = {}) {
+    const ensured = await ensureAgentHome({
+      homeRoot: this.homePaths.homeRoot,
+      agentName: agentId,
+    });
+    const config = this.loadConfig();
+    const target = ensureAgentConfig(config, ensured.paths.agentName);
+    target.name = options.displayName || target.name || ensured.paths.agentName;
+    target.workspace = options.workspace || ensured.paths.workspaceDir;
+    target.agentDir = options.agentDir || ensured.paths.agentRoot;
+    target.model = target.model || { ...config.agents.defaults.model };
+    if (options.primaryModel) {
+      target.model.primary = options.primaryModel;
+    }
+    if (options.fallbackModels) {
+      target.model.fallbacks = options.fallbackModels;
+    }
+    touchMeta(config);
+    this.saveConfig(config);
+    return {
+      agentId: ensured.paths.agentName,
+      paths: ensured.paths,
+      created: ensured.created,
+      model: target.model,
+    };
+  }
+
+  listAgents() {
+    const config = this.loadConfig();
+    const agents = config.agents.list || [];
+    return agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name || agent.id,
+      workspace: agent.workspace || "",
+      agentDir: agent.agentDir || "",
+      model: agent.model || config.agents.defaults.model,
+    }));
   }
 
   setPrimaryModel(route: string, agentId: string = this.homePaths.agentName) {
@@ -189,16 +234,36 @@ export class ModelManager {
     const settings: ProviderSettings = {
       name: providerName,
       model: model.id,
-      baseUrl: provider.baseUrl,
+      baseUrl: resolveProviderBaseUrl(providerName, model.id, provider.baseUrl),
       apiKey: resolveProviderCredential(provider),
     };
 
-    const api = model.api || provider.api;
+    const api = resolveProviderApi(providerName, model.id, model.api || provider.api);
     if (api === "anthropic-messages") {
       return new AnthropicCompatibleLLM(settings);
     }
     return new OpenAICompatibleLLM(settings);
   }
+}
+
+function resolveProviderApi(
+  providerName: string,
+  modelId: string,
+  api: ProviderConfig["api"],
+): ProviderConfig["api"] {
+  if (providerName === "deepseek" && /^deepseek-v4-/i.test(modelId)) {
+    return "anthropic-messages";
+  }
+  return api;
+}
+
+function resolveProviderBaseUrl(providerName: string, modelId: string, baseUrl: string) {
+  if (providerName === "deepseek" && /^deepseek-v4-/i.test(modelId)) {
+    return baseUrl.endsWith("/anthropic")
+      ? baseUrl
+      : baseUrl.replace(/\/v1\/?$/, "/anthropic");
+  }
+  return baseUrl;
 }
 
 function resolveProviderCredential(provider: ProviderConfig) {
@@ -208,7 +273,7 @@ function resolveProviderCredential(provider: ProviderConfig) {
   return provider.apiKey || provider.oauth?.accessToken || "";
 }
 
-function ensureAgentConfig(config: PetAgentConfig, agentId: string) {
+function ensureAgentConfig(config: ThothAgentConfig, agentId: string) {
   config.agents.list = config.agents.list || [];
   let agent = config.agents.list.find((item) => item.id === agentId);
   if (!agent) {
@@ -222,7 +287,7 @@ function ensureAgentConfig(config: PetAgentConfig, agentId: string) {
   return agent;
 }
 
-function touchMeta(config: PetAgentConfig) {
+function touchMeta(config: ThothAgentConfig) {
   config.meta = {
     ...(config.meta || {}),
     lastTouchedAt: new Date().toISOString(),

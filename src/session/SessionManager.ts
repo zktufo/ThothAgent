@@ -129,19 +129,20 @@ export class SessionManager {
     return message;
   }
 
-  async appendToolUse(toolName: string, input: Record<string, unknown>, metadata?: Record<string, unknown>) {
+  async appendToolUse(toolName: string, input: Record<string, unknown>, options?: { metadata?: Record<string, unknown>; step?: number }) {
     const session = await this.getCurrentSession();
     this.saveSessionIndex(session);
     return this.store.actions.logAction({
       sessionId: session.id,
       actionType: "tool_use",
       toolName,
+      step: options?.step,
       resourceType: "tool",
       resourceId: toolName,
       inputJson: input,
       outputStatus: "started",
       outputSummary: `${toolName}`,
-      metadata,
+      metadata: options?.metadata,
     });
   }
 
@@ -151,6 +152,7 @@ export class SessionManager {
     options: {
       success?: boolean;
       error?: string;
+      step?: number;
       metadata?: Record<string, unknown>;
       toolCallId?: string;
     } = {},
@@ -193,6 +195,7 @@ export class SessionManager {
       sessionId: session.id,
       actionType: "tool_result",
       toolName,
+      step: options.step,
       resourceType: artifactId ? "artifact" : "tool",
       resourceId: artifactId || toolName,
       outputStatus: options.success === false ? "error" : "success",

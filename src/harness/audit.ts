@@ -3,7 +3,7 @@
  *
  * Every tool call is logged with agent identity, input, success/failure
  * status, error details, and duration. The log is persisted to
- * `~/.pet-agent/audit/audit.db` and supports queries by tool name,
+ * `~/.ThothAgent/audit/audit.db` and supports queries by tool name,
  * agent ID, time range, and aggregate statistics.
  *
  * Uses node:sqlite (DatabaseSync) — the same approach as KnowledgeIndexer.
@@ -16,7 +16,7 @@ import crypto from "crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { AuditEntry } from "./types.js";
 
-const DEFAULT_DB_DIR = path.resolve(os.homedir(), ".pet-agent", "audit");
+const DEFAULT_DB_DIR = path.resolve(os.homedir(), ".ThothAgent", "audit");
 const DEFAULT_DB_PATH = path.join(DEFAULT_DB_DIR, "audit.db");
 
 export class AuditLogger {

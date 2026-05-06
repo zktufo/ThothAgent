@@ -1,5 +1,5 @@
 /**
- * Pet-Agent Gateway — WebSocket + HTTP 服务
+ * ThothAgent Gateway — WebSocket + HTTP 服务
  *
  * 功能：
  * - WebSocket 协议：agent 请求/响应流式转发
@@ -12,7 +12,7 @@ import fs from "fs";
 import path from "path";
 import { spawn, type ChildProcess } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
-import { PetAgent } from "../agent/index.js";
+import { ThothAgent } from "../agent/index.js";
 import { ensureUserHomeReady, type UserHomePaths } from "../home/index.js";
 import { MemoryStore } from "../memory/index.js";
 import { ModelManager } from "../model_manager/index.js";
@@ -61,7 +61,7 @@ interface GatewayJsonBody {
   [key: string]: any;
 }
 
-export class PetGateway {
+export class ThothGateway {
   readonly config: GatewayConfig;
   readonly httpServer: http.Server;
   readonly wss: WebSocketServer;
@@ -73,7 +73,7 @@ export class PetGateway {
   readonly tracer: TraceManager;
   readonly scheduler: Scheduler;
   readonly maintenance: MaintenanceCoordinator;
-  agents = new Map<string, PetAgent>();
+  agents = new Map<string, ThothAgent>();
 
   // ── 外挂 RAG 服务进程 ──
   #ragProcess: ChildProcess | null = null;
@@ -86,8 +86,8 @@ export class PetGateway {
     this.homePaths = homePaths;
     this.modelManager = new ModelManager({ homePaths });
     this.logger = new Logger({
-      service: "pet-gateway",
-      level: process.env.PET_AGENT_LOG_LEVEL === "debug" ? "debug" : "info",
+      service: "thoth-gateway",
+      level: process.env.THOTH_AGENT_LOG_LEVEL === "debug" ? "debug" : "info",
       bindings: {
         host: config.host,
         port: config.port,
@@ -107,11 +107,11 @@ export class PetGateway {
       tracer: this.tracer,
       listAgents: () => {
         const defaultAgentId = this.defaultAgentId();
-        const entries: Array<[string, PetAgent]> = [
+        const entries: Array<[string, ThothAgent]> = [
           [defaultAgentId, this.getOrCreateAgent(defaultAgentId)],
           ...[...this.agents.entries()],
         ];
-        const deduped = new Map<string, PetAgent>(entries);
+        const deduped = new Map<string, ThothAgent>(entries);
         return [...deduped.entries()].map(([agentId, agent]) => ({ agentId, agent }));
       },
     });
@@ -127,9 +127,9 @@ export class PetGateway {
     });
   }
 
-  static async create(config: Partial<GatewayConfig> = {}): Promise<PetGateway> {
+  static async create(config: Partial<GatewayConfig> = {}): Promise<ThothGateway> {
     const homePaths = await ensureUserHomeReady();
-    return new PetGateway({
+    return new ThothGateway({
       port: config.port ?? 18889,
       host: config.host ?? "127.0.0.1",
       staticDir: config.staticDir || path.resolve(process.cwd(), "webui"),
@@ -271,6 +271,10 @@ export class PetGateway {
         this.send(client, { id: req.id, type: "res", ok: true, payload: { status: "ok", uptime: process.uptime() } });
       } else if (req.method === "status") {
         this.send(client, { id: req.id, type: "res", ok: true, payload: await this.buildStatusPayload() });
+      } else if (req.method === "agents.list") {
+        this.send(client, { id: req.id, type: "res", ok: true, payload: await this.buildAgentsPayload() });
+      } else if (req.method === "agents.create") {
+        this.send(client, { id: req.id, type: "res", ok: true, payload: await this.createAgentPayload(req.params || {}) });
       } else if (req.method === "models.list") {
         this.send(client, { id: req.id, type: "res", ok: true, payload: await this.buildModelsPayload() });
       } else if (req.method === "models.route") {
@@ -562,7 +566,7 @@ export class PetGateway {
           ...this.homePaths,
           ...ensureRuntimeHomePaths(resolvedAgentId, this.homePaths.homeRoot),
         };
-      this.agents.set(resolvedAgentId, new PetAgent({
+      this.agents.set(resolvedAgentId, new ThothAgent({
         memory: new MemoryStore({ homePaths }),
       }));
     }
@@ -684,7 +688,7 @@ export class PetGateway {
         root: this.homePaths.homeRoot,
         agentDataDir: this.homePaths.agentDataDir,
         workspaceDir: this.homePaths.workspaceDir,
-        configPath: this.homePaths.petAgentConfigPath,
+        configPath: this.homePaths.thothAgentConfigPath,
       },
       observability: {
         scheduler: this.scheduler.getSnapshot(),
@@ -698,6 +702,45 @@ export class PetGateway {
     return {
       current: this.modelManager.getAgentModelConfig(agentId),
       items: this.modelManager.listModels(),
+    };
+  }
+
+  private async buildAgentsPayload() {
+    return {
+      items: this.modelManager.listAgents(),
+      current: this.defaultAgentId(),
+    };
+  }
+
+  private async createAgentPayload(params: GatewayJsonBody) {
+    const requestedId = this.resolveAgentId(params.agentId || params.id || params.name);
+    if (!requestedId || requestedId === this.defaultAgentId()) {
+      throw new Error("agentId required and must not be main");
+    }
+
+    const displayName = String(params.displayName || params.name || requestedId).trim();
+    const primaryModel = typeof params.primaryModel === "string" && params.primaryModel.trim()
+      ? params.primaryModel.trim()
+      : undefined;
+    const fallbackModels = Array.isArray(params.fallbackModels)
+      ? params.fallbackModels.map((item) => String(item).trim()).filter(Boolean)
+      : undefined;
+
+    const ensured = await this.modelManager.ensureAgentRegistered(requestedId, {
+      displayName,
+      primaryModel,
+      fallbackModels,
+    });
+    return {
+      ok: true,
+      agent: {
+        id: ensured.agentId,
+        name: displayName,
+        workspace: ensured.paths.workspaceDir,
+        agentDir: ensured.paths.agentRoot,
+        model: ensured.model,
+      },
+      created: ensured.created,
     };
   }
 
@@ -861,7 +904,7 @@ function ensureRuntimeHomePaths(agentId: string, homeRoot: string): UserHomePath
   return {
     packageRoot: path.resolve(process.cwd()),
     homeRoot,
-    petAgentConfigPath: path.join(homeRoot, "PetAgent.json"),
+    thothAgentConfigPath: path.join(homeRoot, "ThothAgent.json"),
     agentName: agentId,
     agentRoot,
     agentDataDir,

@@ -46,6 +46,8 @@ export interface SessionActionRecord {
   sessionId: string;
   actionType: string;
   toolName?: string | null;
+  /** ReAct step 序号 */
+  step?: number | null;
   resourceType?: string | null;
   resourceId?: string | null;
   inputJson?: string | null;

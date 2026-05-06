@@ -482,7 +482,7 @@ function appendMessage(role, text, tone = role, autoScroll = true) {
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  meta.textContent = role === "user" ? "你" : role === "assistant" ? "PetAgent" : "System";
+  meta.textContent = role === "user" ? "你" : role === "assistant" ? "ThothAgent" : "System";
 
   const bubble = document.createElement("div");
   bubble.className = `bubble ${tone}`;
@@ -517,7 +517,7 @@ function renderTraceItem(action) {
   return `
     <details class="trace-card glass-subpanel"${open}>
       <summary>
-        <span class="trace-origin">PetAgent</span>
+        <span class="trace-origin">ThothAgent</span>
         <span class="trace-caret">▶</span>
         <span class="trace-pill">${escapeHtml(headLabel)}</span>
         <span class="trace-label">${escapeHtml(toolName)}</span>

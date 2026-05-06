@@ -357,7 +357,7 @@ function buildExternalMemoryRecord(input: {
     input.source === "on_memory_write" ? "assistant handled an explicit built-in memory write" : "assistant completed a turn",
   ];
   const aiIdentityCard = [
-    "pet-agent-ts assistant",
+    "ThothAgent assistant",
     "acts as a vertical-domain agent with builtin files plus external memory provider",
   ];
   const keywords = inferKeywords(input.userInput, input.assistantOutput, input.explicitMemoryWrite);
@@ -414,7 +414,7 @@ function inferKeywords(userInput: string, assistantOutput: string, explicitMemor
 function inferTopics(userInput: string, assistantOutput: string, explicitMemoryWrite?: string) {
   const haystack = `${userInput}\n${assistantOutput}\n${explicitMemoryWrite || ""}`;
   const topics: string[] = [];
-  if (/狗|猫|宠物|疫苗|驱虫|症状|健康/i.test(haystack)) topics.push("pet-health");
+  if (/狗|猫|宠物|疫苗|驱虫|症状|健康/i.test(haystack)) topics.push("animal-care");
   if (/直接|简洁|结论|格式|风格/i.test(haystack)) topics.push("response-style");
   if (/记住|以后|下次|偏好|习惯/i.test(haystack)) topics.push("user-preference");
   if (/规则|领域|术语|流程/i.test(haystack)) topics.push("domain-knowledge");

@@ -45,7 +45,7 @@ src/artifacts/
 数据库路径：
 
 ```txt
-~/.PetAgent/agents/<agent>/sessions/session.sqlite
+~/.ThothAgent/agents/<agent>/sessions/session.sqlite
 ```
 
 核心表：

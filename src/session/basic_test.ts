@@ -9,7 +9,7 @@ import { SessionManager } from "./SessionManager.js";
 import { SessionCompressor } from "./SessionCompressor.js";
 
 async function main() {
-  const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pet-agent-session-"));
+  const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "thoth-agent-session-"));
   const homePaths = await onboardUserHome({ homeRoot, agentName: "tester" }).then((result) => result.paths);
   const router = new SessionRouter();
   const store = new SQLiteSessionStore({ homePaths });

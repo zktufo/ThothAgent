@@ -1,5 +1,5 @@
 /**
- * Built-in tools for pet-agent.
+ * Built-in tools for ThothAgent.
  */
 export interface ToolResult {
   success: boolean;

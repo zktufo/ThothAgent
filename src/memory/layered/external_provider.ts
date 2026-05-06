@@ -31,7 +31,7 @@ export function createExternalMemoryProvider(
 
 export function readExternalMemoryProviderConfig(homePaths: UserHomePaths): ExternalMemoryProviderConfig {
   try {
-    const raw = JSON.parse(fs.readFileSync(homePaths.petAgentConfigPath, "utf-8")) as {
+    const raw = JSON.parse(fs.readFileSync(homePaths.thothAgentConfigPath, "utf-8")) as {
       memory?: {
         externalProvider?: {
           kind?: string;

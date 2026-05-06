@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /**
- * petagent CLI - rich terminal interface for PetAgent.
+ * thoth CLI - rich terminal interface for ThothAgent.
  */
 import chalk from "chalk";
 import fs from "fs";
+import http from "http";
 import path from "path";
-import { PetAgent } from "../agent/index.js";
+import { spawn } from "child_process";
+import { ThothAgent } from "../agent/index.js";
 import type { ToolTraceEvent } from "../llm/index.js";
 import { ensureUserHomeReady, onboardUserHome } from "../home/index.js";
 import { ModelManager } from "../model_manager/index.js";
-import { runConfigureWizard, configureProviderWithApiKey } from "./configure_wizard.js";
+import { runConfigureWizard } from "./configure_wizard.js";
 import { GatewayCliClient, type GatewayConnectionState, type GatewayStreamEvent } from "./gateway_client.js";
 
-const CLI_NAME = "petagent";
+const CLI_NAME = "thoth";
 
 const C = {
   dim:     chalk.dim,
@@ -89,7 +91,7 @@ function renderMarkdown(text: string): string {
     ;
 }
 
-async function statusBar(agent: PetAgent) {
+async function statusBar(agent: ThothAgent) {
   const u = agent.llm.usage;
   const frac = u.usageFraction;
   const session = await agent.runtime.sessions.getCurrentSession();
@@ -179,18 +181,31 @@ async function runGatewayChat(
   });
 }
 
-async function promptLine(question: string) {
-  const readline = await import("readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+function openBrowser(url: string) {
+  const command = process.platform === "darwin"
+    ? "open"
+    : process.platform === "win32"
+      ? "cmd"
+      : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: "ignore",
   });
+  child.unref();
+}
 
-  return new Promise<string>((resolve) => {
-    rl.question(`${question}: `, (answer) => {
-      rl.close();
-      resolve(answer.trim());
+function isHttpReachable(url: string) {
+  return new Promise<boolean>((resolve) => {
+    const req = http.get(url, (res) => {
+      res.resume();
+      resolve(Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 500));
     });
+    req.setTimeout(500, () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on("error", () => resolve(false));
   });
 }
 
@@ -202,7 +217,7 @@ function formatTracePayload(payload?: Record<string, any>): string {
 
 function renderCliHelp() {
   const lines = [
-    `${C.bold.red("🐶 PetAgent")} ${C.muted("—")} ${C.white("CLI Command Center")}`,
+    `${C.bold.cyan("△ ThothAgent")} ${C.muted("—")} ${C.white("CLI Command Center")}`,
     "",
     `${C.bold("用法")}`,
     `  ${CLI_NAME} <command> [options]`,
@@ -210,17 +225,15 @@ function renderCliHelp() {
     `${C.bold("Setup")}`,
     `  ${CLI_NAME} onboard [--install-daemon]`,
     `  ${CLI_NAME} configure`,
-    `  ${CLI_NAME} configure provider <provider> --api-key <key>`,
     "",
     `${C.bold("Gateway")}`,
     `  ${CLI_NAME} gateway [--host 127.0.0.1] [--port 18889]`,
+    `  ${CLI_NAME} dashboard [--host 127.0.0.1] [--port 18889]`,
     "",
     `${C.bold("Model")}`,
     `  ${CLI_NAME} model list`,
     `  ${CLI_NAME} model current`,
     `  ${CLI_NAME} model use <primary> [fallback1,fallback2]`,
-    `  ${CLI_NAME} model key <provider> <apiKey>`,
-    `  ${CLI_NAME} model oauth <provider>`,
     "",
     `${C.bold("Runtime")}`,
     `  ${CLI_NAME} tui`,
@@ -228,11 +241,12 @@ function renderCliHelp() {
     `${C.bold("说明")}`,
     `  ${CLI_NAME} ${C.muted("默认仅输出帮助，不自动进入 TUI")}`,
     `  ${CLI_NAME} tui ${C.muted("进入交互式终端工作台")}`,
-    `  ${CLI_NAME} gateway ${C.muted("启动 web control-ui 和 API 网关")}`,
+    `  ${CLI_NAME} gateway ${C.muted("仅启动 API gateway 服务")}`,
+    `  ${CLI_NAME} dashboard ${C.muted("启动 gateway 并打开 web control-ui")}`,
     "",
     `${C.bold("示例")}`,
     `  ${CLI_NAME} configure`,
-    `  ${CLI_NAME} gateway`,
+    `  ${CLI_NAME} dashboard`,
     `  ${CLI_NAME} model current`,
     `  ${CLI_NAME} tui`,
   ];
@@ -366,7 +380,7 @@ async function main() {
     console.log(`User home ready: ${result.paths.homeRoot}`);
     console.log(`Agent data: ${result.paths.agentDataDir}`);
     console.log(`Workspace: ${result.paths.workspaceDir}`);
-    console.log(`Config: ${result.paths.petAgentConfigPath}`);
+    console.log(`Config: ${result.paths.thothAgentConfigPath}`);
     if (installDaemon) {
       console.log(`Daemon manifest: ${result.paths.daemonManifestPath}`);
     }
@@ -382,9 +396,37 @@ async function main() {
     const hostValue = readFlagValue(args, "--host");
     const port = portValue ? (parseInt(portValue, 10) || 18889) : 18889;
     const host = hostValue || "127.0.0.1";
-    const { PetGateway } = await import("../gateway/index.js");
-    const gateway = await PetGateway.create({ port, host });
+    const { ThothGateway } = await import("../gateway/index.js");
+    const gateway = await ThothGateway.create({ port, host });
     gateway.start();
+    return;
+  }
+
+  // ── dashboard ──────────────────────────────────────────────
+  if (args[0] === "dashboard") {
+    const portValue = readFlagValue(args, "--port");
+    const hostValue = readFlagValue(args, "--host");
+    const port = portValue ? (parseInt(portValue, 10) || 18889) : 18889;
+    const host = hostValue || "127.0.0.1";
+    const browserHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+    const url = `http://${browserHost}:${port}`;
+    if (await isHttpReachable(url)) {
+      openBrowser(url);
+      console.log(`Dashboard: ${url}`);
+      return;
+    }
+    const { ThothGateway } = await import("../gateway/index.js");
+    const gateway = await ThothGateway.create({ port, host });
+    gateway.start();
+    setTimeout(() => {
+      try {
+        openBrowser(url);
+        console.log(`Dashboard: ${url}`);
+      } catch (error: any) {
+        console.log(`Dashboard: ${url}`);
+        console.log(C.yellow(`⚠ 浏览器打开失败: ${error?.message || error}`));
+      }
+    }, 250);
     return;
   }
 
@@ -393,24 +435,8 @@ async function main() {
     const subcommand = args[1];
 
     if (subcommand === "provider") {
-      const providerKey = args[2];
-      const apiKeyFlag = args.indexOf("--api-key");
-
-      if (providerKey && apiKeyFlag !== -1 && args[apiKeyFlag + 1]) {
-        // Non-interactive: petagent configure provider minimax-portal --api-key sk-xxx
-        const apiKey = args[apiKeyFlag + 1];
-        try {
-          configureProviderWithApiKey(modelManager, providerKey, apiKey);
-          console.log(`✅ ${providerKey} 配置完成 (API Key)`);
-          console.log(`   Config: ${homePaths.petAgentConfigPath}`);
-        } catch (e: any) {
-          console.error(`❌ 配置失败: ${e.message}`);
-          process.exit(1);
-        }
-      } else {
-        // Interactive wizard mode
-        await runConfigureWizard(modelManager, homePaths.agentName);
-      }
+      console.log(C.yellow(`⚠ "${CLI_NAME} configure provider" 已移除，请使用 ${CLI_NAME} configure 交互式配置`));
+      return;
     } else {
       // Default: interactive wizard
       await runConfigureWizard(modelManager, homePaths.agentName);
@@ -438,7 +464,7 @@ async function main() {
       const current = modelManager.getAgentModelConfig(homePaths.agentName);
       console.log(`Primary: ${current.primary}`);
       console.log(`Fallbacks: ${(current.fallbacks || []).join(", ") || "(none)"}`);
-      console.log(`Config: ${homePaths.petAgentConfigPath}`);
+      console.log(`Config: ${homePaths.thothAgentConfigPath}`);
       return;
     }
 
@@ -465,44 +491,7 @@ async function main() {
       return;
     }
 
-    if (subcommand === "key") {
-      const providerName = args[2];
-      const apiKey = args[3];
-      if (!providerName || !apiKey) {
-        console.log(`Usage: ${CLI_NAME} model key <provider> <apiKey>`);
-        return;
-      }
-      modelManager.updateProviderApiKey(providerName, apiKey);
-      console.log(`Updated apiKey for provider: ${providerName}`);
-      return;
-    }
-
-    if (subcommand === "oauth") {
-      const providerName = args[2];
-      if (!providerName) {
-        console.log(`Usage: ${CLI_NAME} model oauth <provider>`);
-        return;
-      }
-      const accessToken = await promptLine(`输入 ${providerName} 的 OAuth Access Token`);
-      if (!accessToken) {
-        console.log("OAuth access token 不能为空");
-        return;
-      }
-      const refreshToken = await promptLine(`输入 ${providerName} 的 OAuth Refresh Token（可留空）`);
-      const accountLabel = await promptLine(`输入 ${providerName} 的账号备注（可留空）`);
-      const accountId = await promptLine(`输入 ${providerName} 的账号 ID（可留空）`);
-      modelManager.updateProviderOAuth(providerName, {
-        accessToken,
-        refreshToken,
-        accountLabel,
-        accountId,
-        enabled: true,
-      });
-      console.log(`Updated OAuth auth for provider: ${providerName}`);
-      return;
-    }
-
-    console.log(`Usage: ${CLI_NAME} model <select|list|current|use|key|oauth> ...`);
+    console.log(`Usage: ${CLI_NAME} model <select|list|current|use> ...`);
     return;
   }
 
@@ -524,22 +513,21 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
   const configuredProviders = modelManager.listModels().filter(m => m.configured);
   if (configuredProviders.length === 0) {
     console.log();
-    console.log(`${C.bold.red("🐶 PetAgent")} ${C.red("2026.4.28")} ${C.muted("—")} ${C.red("毛孩子健康顾问工作台")}`);
+    console.log(`${C.bold.cyan("△ ThothAgent")} ${C.cyan("2026.5.06")} ${C.muted("—")} ${C.cyan("Self-Improving Domain Agent Framework")}`);
     console.log();
     console.log(C.yellow(`⚠ 还没有配置任何 Model Provider`));
     console.log(C.white(`请先运行 ${C.bold(`${CLI_NAME} configure`)} 配置你的第一个 AI 模型供应商`));
     console.log();
     console.log(C.gray(`例如:`) + C.cyan(` ${CLI_NAME} configure`));
-    console.log(C.gray(`或:   `) + C.cyan(` ${CLI_NAME} configure provider minimax-portal --api-key <你的key>`));
     console.log();
     return;
   }
 
   console.log();
-  console.log(`${C.bold.red("🐶 PetAgent")} ${C.red("2026.4.28")} ${C.muted("—")} ${C.red("毛孩子健康顾问工作台")}`);
+  console.log(`${C.bold.cyan("△ ThothAgent")} ${C.cyan("2026.5.06")} ${C.muted("—")} ${C.cyan("Self-Improving Domain Agent Framework")}`);
   console.log();
 
-  const agent = new PetAgent();
+  const agent = new ThothAgent();
   let gatewayEventHandler: ((event: GatewayStreamEvent) => void) | null = null;
   let gatewayClient: GatewayCliClient | null = null;
   let gatewayConnected = false;
@@ -630,7 +618,7 @@ async function startTUI(modelManager: ModelManager, homePaths: import("../home/i
   console.log(`${C.green("✓")} Skills loaded: ${skills.length}`);
   console.log(`${C.green("✓")} User data: ${C.muted(homePaths.agentDataDir)}`);
   console.log(`${C.green("✓")} Workspace: ${C.muted(homePaths.workspaceDir)}`);
-  console.log(`${C.green("✓")} Config: ${C.muted(homePaths.petAgentConfigPath)}`);
+  console.log(`${C.green("✓")} Config: ${C.muted(homePaths.thothAgentConfigPath)}`);
   if (gatewayClient && gatewayConnected) {
     console.log(`${C.green("✓")} Gateway: ${C.muted(defaultGatewayUrl)}`);
   }

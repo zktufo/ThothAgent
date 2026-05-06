@@ -625,6 +625,7 @@ export class SQLiteSessionStore implements SessionStore {
         session_id TEXT NOT NULL,
         action_type TEXT NOT NULL,
         tool_name TEXT,
+        step INTEGER,
         resource_type TEXT,
         resource_id TEXT,
         input_json TEXT,
@@ -651,6 +652,10 @@ export class SQLiteSessionStore implements SessionStore {
       );
     `);
 
+    if (!this.columnExists("actions", "step")) {
+      this.db.exec(`ALTER TABLE actions ADD COLUMN step INTEGER;`);
+    }
+
     if (forceDisableFts) {
       this.ftsEnabled = false;
       return;
@@ -671,6 +676,11 @@ export class SQLiteSessionStore implements SessionStore {
       this.ftsEnabled = false;
       this.log(`FTS5 unavailable, fallback to LIKE search: ${String(error)}`);
     }
+  }
+
+  private columnExists(tableName: string, columnName: string) {
+    const rows = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<Record<string, unknown>>;
+    return rows.some((row) => String(row.name || "") === columnName);
   }
 
   private insertIntoFts(message: SessionMessageRecord) {

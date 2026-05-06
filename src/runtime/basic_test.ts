@@ -62,7 +62,7 @@ class FailingLLM extends FakeLLM {
 }
 
 async function main() {
-  const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pet-agent-runtime-"));
+  const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "thoth-agent-runtime-"));
   const homePaths = await onboardUserHome({ homeRoot, agentName: "tester" }).then((result) => result.paths);
   const memory = new MemoryStore({ homePaths, sessionId: "test-session" });
   const sessions = new SessionManager({ homePaths, sessionId: "test-session" });
@@ -100,7 +100,7 @@ async function main() {
   const fallbackResult = await fallbackRuntime.runTurn("狗狗挑食怎么办");
   assert.ok(fallbackResult.text.includes("少量多次"));
 
-  const budgetHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pet-agent-runtime-budget-"));
+  const budgetHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "thoth-agent-runtime-budget-"));
   const budgetHomePaths = await onboardUserHome({ homeRoot: budgetHomeRoot, agentName: "budget-tester" }).then((result) => result.paths);
   const budgetMemory = new MemoryStore({ homePaths: budgetHomePaths, sessionId: "budget-session" });
   const budgetSessions = new SessionManager({ homePaths: budgetHomePaths, sessionId: "budget-session" });

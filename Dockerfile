@@ -1,5 +1,5 @@
 # =============================================================================
-# pet-agent — 多阶段构建
+# ThothAgent — 多阶段构建
 # =============================================================================
 
 # ---- Stage 1: Build ----
@@ -22,7 +22,7 @@ RUN npm run build
 FROM node:22-alpine AS runtime
 
 # 安全：非 root 用户运行
-RUN addgroup -S petagent && adduser -S petagent -G petagent
+RUN addgroup -S thothagent && adduser -S thothagent -G thothagent
 
 WORKDIR /app
 
@@ -32,18 +32,18 @@ COPY --from=builder /build/dist dist/
 COPY --from=builder /build/package.json ./
 
 # 数据目录（由 docker-compose volume 挂载）
-RUN mkdir -p /data && chown petagent:petagent /data
+RUN mkdir -p /data && chown thothagent:thothagent /data
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:${PORT:-18889}/health', r => r.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))"
 
-USER petagent
+USER thothagent
 
 ENV \
-  PET_AGENT_HOME_ROOT=/data \
-  PET_AGENT_GATEWAY_HOST=0.0.0.0 \
-  PET_AGENT_GATEWAY_PORT=18889
+  THOTH_AGENT_HOME_ROOT=/data \
+  THOTH_AGENT_GATEWAY_HOST=0.0.0.0 \
+  THOTH_AGENT_GATEWAY_PORT=18889
 
 EXPOSE 18889
 

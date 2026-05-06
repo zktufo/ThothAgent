@@ -1,5 +1,5 @@
 /**
- * Skill system — plugin architecture for pet-agent.
+ * Skill system — plugin architecture for ThothAgent.
  *
  * Supports three formats:
  *   1. skills/skill-name/SKILL.md (directory skill)

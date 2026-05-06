@@ -1,12 +1,12 @@
 /**
- * PetAgent is now a thin facade over the runtime orchestrator.
+ * ThothAgent is now a thin facade over the runtime orchestrator.
  *
  * This keeps the external API stable for the CLI while moving the real
  * responsibilities into dedicated runtime/session/tool layers.
  */
 import { AgentRuntime, type AgentRuntimeOptions } from "../runtime/index.js";
 
-export class PetAgent {
+export class ThothAgent {
   readonly runtime: AgentRuntime;
 
   constructor(options: AgentRuntimeOptions = {}) {
@@ -47,16 +47,16 @@ export class PetAgent {
       `- **${s.commands[0] || s.name}** — ${s.description}`
     );
     return [
-      `🐾 **毛孩子健康顾问** 已就位！`,
+      `△ **ThothAgent** 已就位！`,
       ``,
       `## 可用命令`,
       lines.join("\n"),
       ``,
-      `直接输入文字描述症状，LLM 会智能决定是否调用工具。`,
+      `直接输入任务或问题，LLM 会智能决定是否调用工具。`,
       ``,
       `---`,
       ``,
-      `**提示：** 输入 \`/tree\` 查看项目结构，输入 \`/history\` 查看问诊历史`,
+      `**提示：** 输入 \`/tree\` 查看项目结构，输入 \`/history\` 查看历史记录`,
     ].join("\n");
   }
 
@@ -67,10 +67,10 @@ export class PetAgent {
       ...skills.map((s) => `- **${s.commands[0] || s.name}** — ${s.description}`),
       ``,
       `---`,
-      `- 直接输入文字 — 宠物健康问题 / LLM 智能回答`,
-      `- 发送图片 — 自动分析宠物健康`,
+      `- 直接输入文字 — 通用垂直任务 / LLM 智能回答`,
+      `- 发送图片 — 多模态理解与分析`,
       `- \`/tree\` — 查看项目结构`,
-      `- \`/history\` — 查看问诊历史`,
+      `- \`/history\` — 查看会话历史`,
       `- \`/exit\` — 退出`,
     ].join("\n");
   }

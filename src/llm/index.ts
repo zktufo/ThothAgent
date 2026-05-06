@@ -91,7 +91,7 @@ export interface LLMProvider {
     messages: LLMMessage[],
     systemPrompt: string,
     tools: LLMToolDefinition[],
-    executor: (toolName: string, input: Record<string, any>) => Promise<LLMToolExecutionResult>,
+    executor: (toolName: string, input: Record<string, any>, step?: number) => Promise<LLMToolExecutionResult>,
     maxSteps?: number,
     onTrace?: (event: ToolTraceEvent) => void
   ): Promise<{ text: string; toolCalls: string[]; usage: TokenUsageTracker }>;
@@ -160,7 +160,7 @@ abstract class BaseLLMProvider implements LLMProvider {
     messages: LLMMessage[],
     systemPrompt: string,
     tools: LLMToolDefinition[],
-    executor: (toolName: string, input: Record<string, any>) => Promise<LLMToolExecutionResult>,
+    executor: (toolName: string, input: Record<string, any>, step?: number) => Promise<LLMToolExecutionResult>,
     maxSteps: number = 4,
     onTrace?: (event: ToolTraceEvent) => void
   ): Promise<{ text: string; toolCalls: string[]; usage: TokenUsageTracker }> {
@@ -188,7 +188,7 @@ abstract class BaseLLMProvider implements LLMProvider {
           step: step + 1,
           input: toolUse.input ?? {},
         });
-        const result = await executor(toolUse.name, toolUse.input ?? {});
+        const result = await executor(toolUse.name, toolUse.input ?? {}, step + 1);
         toolCalls.push(toolUse.name);
         onTrace?.({
           type: "tool_result",
@@ -414,7 +414,7 @@ export function createDefaultProviders() {
 }
 
 function loadProviderSettings(keys: string[], defaults: ProviderSettings): ProviderSettings {
-  const configPath = path.join(os.homedir(), ".PetAgent", "PetAgent.json");
+  const configPath = path.join(os.homedir(), ".ThothAgent", "ThothAgent.json");
   let loaded = { ...defaults };
 
   try {

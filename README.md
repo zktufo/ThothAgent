@@ -25,12 +25,33 @@ ThothAgent is a configurable runtime for building vertical AI copilots that impr
 ## Quick Start
 
 ```bash
-git clone https://github.com/zktufo/ThothAgent.git
-cd ThothAgent
-npm install
-npm run build
-node dist/cli/main.js tui
+npm install -g thoth-agent
+thoth configure
+thoth tui
 ```
+
+## CLI Commands
+
+```bash
+thoth help
+thoth configure
+thoth gateway [--host 127.0.0.1] [--port 18889]
+thoth dashboard [--host 127.0.0.1] [--port 18889]
+thoth model list
+thoth model current
+thoth model use <primary> [fallback1,fallback2]
+thoth onboard [--install-daemon]
+thoth tui
+```
+
+Main command groups:
+
+- `thoth configure`: configure model providers and credentials
+- `thoth tui`: start the terminal workspace
+- `thoth gateway`: start only the gateway service
+- `thoth dashboard`: start the gateway service and open the web control UI in your browser
+- `thoth model *`: inspect or update model routing
+- `thoth onboard`: initialize `~/.ThothAgent`
 
 ## Project Structure
 
@@ -41,7 +62,7 @@ src/
 ├── core/               # MCP integration and skill registry
 ├── gateway/            # websocket/http gateway and web control surface backend
 ├── harness/            # guarded exec/read/write tool harness
-├── home/               # ~/.PetAgent bootstrap and runtime home layout
+├── home/               # ~/.ThothAgent bootstrap and runtime home layout
 ├── infra/              # logging, metrics, scheduler, tracing, maintenance
 ├── llm/                # provider adapters and tool-loop runtime
 ├── memory/             # unified memory facade
@@ -55,9 +76,9 @@ src/
 ## Runtime Data Layout
 
 ```text
-~/.PetAgent/
+~/.ThothAgent/
 ├── AGENTS.md
-├── PetAgent.json
+├── ThothAgent.json
 ├── agents/
 │   └── main/
 │       ├── SOUL.md
@@ -80,7 +101,7 @@ src/
 ThothAgent treats external memory as a provider capability rather than a fixed local database.
 
 - Default provider: `local-file`
-- Config path: `memory.externalProvider` in `~/.PetAgent/PetAgent.json`
+- Config path: `memory.externalProvider` in `~/.ThothAgent/ThothAgent.json`
 - Search path: `memory_search` calls the currently configured provider abstraction
 - Future-ready: remote providers such as Honcho can be added without rewriting the tool layer
 

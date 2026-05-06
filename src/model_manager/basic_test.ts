@@ -6,7 +6,7 @@ import { onboardUserHome } from "../home/index.js";
 import { ModelManager } from "./index.js";
 
 async function main() {
-  const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pet-agent-models-"));
+  const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "thoth-agent-models-"));
   const homePaths = await onboardUserHome({ homeRoot, agentName: "tester" }).then((result) => result.paths);
   const manager = new ModelManager({ homePaths });
 
@@ -21,11 +21,16 @@ async function main() {
   });
   manager.setPrimaryModel("openai/gpt-4o-mini", "tester");
   manager.setFallbackModels(["minimax-portal/MiniMax-M2.7"], "tester");
+  const createdAgent = await manager.ensureAgentRegistered("research-agent", {
+    displayName: "Research Agent",
+    primaryModel: "deepseek/deepseek-chat",
+  });
 
   const list = manager.listModels();
   const after = manager.getAgentModelConfig("tester");
   const providers = manager.getConfiguredProviders("tester");
-  const configText = fs.readFileSync(homePaths.petAgentConfigPath, "utf-8");
+  const configText = fs.readFileSync(homePaths.thothAgentConfigPath, "utf-8");
+  const agents = manager.listAgents();
 
   assert.ok(list.some((item) => item.route === "openai/gpt-4o-mini"));
   assert.ok(list.some((item) => item.route === "deepseek/deepseek-chat"));
@@ -35,6 +40,8 @@ async function main() {
   assert.ok(configText.includes("\"models\""));
   assert.ok(configText.includes("\"agents\""));
   assert.ok(configText.includes("\"oauth\""));
+  assert.equal(createdAgent.agentId, "research-agent");
+  assert.ok(agents.some((item) => item.id === "research-agent"));
 
   console.log("model-manager basic test passed");
 }

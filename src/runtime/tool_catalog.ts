@@ -15,24 +15,77 @@ export interface BuiltinToolSpec {
 export const BUILTIN_TOOL_SPECS: BuiltinToolSpec[] = [
   {
     definition: {
-      name: "memory",
-      description: "维护长期记忆。用于保存重要偏好、项目事实、经验教训；支持 add、replace、remove；没有 read。",
+      name: "agent_manage",
+      description: "管理多 agent。可创建新 agent、查看已有 agent 列表。适合用户明确提出“新建一个负责某领域/某任务的 agent”时使用。",
       input_schema: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["add", "replace", "remove"], description: "记忆操作" },
-          target: { type: "string", enum: ["memory", "user", "domain"], description: "memory 保存长期经验；user 保存用户偏好；domain 保存领域知识/业务规则" },
-          content: { type: "string", description: "add 时的新条目；remove 时也可作为 old_text；replace 时可作为 new_text" },
-          old_text: { type: "string", description: "replace/remove 用的唯一子串" },
-          new_text: { type: "string", description: "replace 的新条目内容" },
+          action: { type: "string", enum: ["create", "list"], description: "create 创建新 agent；list 列出已有 agent" },
+          agent_id: { type: "string", description: "新 agent 的唯一标识，建议使用英文短横线命名；未提供时会基于 display_name 生成" },
+          display_name: { type: "string", description: "用户可见名称，例如 Research Agent" },
+          description: { type: "string", description: "该 agent 的职责、领域范围或行为说明" },
+          primary_model: { type: "string", description: "可选：为新 agent 指定主模型路由，如 openai/gpt-4o-mini" },
+          fallback_models: {
+            type: "array",
+            items: { type: "string" },
+            description: "可选：为新 agent 指定 fallback 模型路由列表",
+          },
         },
         required: ["action"],
       },
     },
     prompt: {
+      name: "agent_manage",
+      when: "用户明确要求创建新 agent、拆分子角色、为特定领域建立独立 agent 时使用",
+      priority: 6,
+    },
+  },
+  {
+    definition: {
       name: "memory",
-      when: "用户说“记住这个”“以后都这样”“这是长期偏好/经验/领域规则”时使用",
+      description: "维护内置长期记忆文件。用于把稳定、高价值、可复用的信息写入 USER.md、MEMORY.md 或 DOMAIN.md；支持 add、replace、remove；不要用它保存一次性上下文。",
+      input_schema: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["add", "replace", "remove"],
+            description: "必填。add=新增一条长期记忆；replace=把已有旧内容替换成更准确的新内容；remove=删除过时/错误/冲突的旧内容",
+          },
+          target: {
+            type: "string",
+            enum: ["memory", "user", "domain"],
+            description: "必填。user -> USER.md，保存用户称呼、偏好、风格、长期习惯；memory -> MEMORY.md，保存项目事实、长期经验、稳定约定；domain -> DOMAIN.md，保存领域规则、术语、流程边界、业务知识",
+          },
+          content: {
+            type: "string",
+            description: "推荐在 add 时使用。写入的内容应是去歧义、可复用、单条即可理解的完整记忆，例如“用户偏好：回答先给结论再列风险”。",
+          },
+          old_text: {
+            type: "string",
+            description: "replace/remove 时必填。必须是目标文件里已经存在、且足够唯一的一段旧文本，用于精确定位要替换或删除的内容。",
+          },
+          new_text: {
+            type: "string",
+            description: "replace 时必填。用于替换 old_text 的新内容。应包含纠正后的完整表述，而不是只写差异片段。",
+          },
+          reason: {
+            type: "string",
+            description: "可选。说明为什么要写这条记忆，例如“用户明确说以后都这样回答”“这是稳定的业务规则”。仅用于帮助推理，不直接写入文件。",
+          },
+        },
+        required: ["action", "target"],
+      },
+    },
+    prompt: {
+      name: "memory",
+      when: "用户明确要求记住，或你识别出稳定的长期偏好、项目约定、经验结论、领域规则时使用；不要用于临时寒暄和一次性上下文",
       priority: 8,
+      safety: [
+        "不要保存一次性上下文、临时问题编号、当前轮即时情绪、低信息量寒暄",
+        "写入前先判断归属：用户偏好 -> user；长期项目/经验 -> memory；领域规则/术语/流程 -> domain",
+        "replace/remove 必须提供唯一 old_text，避免误删无关内容",
+      ],
     },
   },
   {
@@ -56,6 +109,23 @@ export const BUILTIN_TOOL_SPECS: BuiltinToolSpec[] = [
     prompt: {
       name: "memory_search",
       when: "用户问“昨天聊了什么”“记得吗”“之前提到过吗”这类跨会话回忆问题时优先使用",
+      priority: 7,
+    },
+  },
+  {
+    definition: {
+      name: "tool_stats",
+      description: "统计当前 session 的工具调用成功率、失败率、各工具调用次数和最近失败原因。用户询问 tool 调用成功率、工具质量、最近工具失败时优先使用。",
+      input_schema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "最近失败样本数量，默认 5" },
+        },
+      },
+    },
+    prompt: {
+      name: "tool_stats",
+      when: "用户询问工具调用成功率、失败率、最近 tool 是否稳定、哪些工具失败最多时使用",
       priority: 7,
     },
   },
@@ -113,25 +183,7 @@ export const BUILTIN_TOOL_SPECS: BuiltinToolSpec[] = [
       priority: 4,
     },
   },
-  {
-    definition: {
-      name: "pet_symptom_query",
-      description: "【RAG】搜索宠物知识库（混合检索：向量+BM25+重排）。用户描述症状时优先调用，比LLM自己的知识更权威。",
-      input_schema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "症状或问题" },
-          mode: { type: "string", enum: ["qa", "search", "agentic"], description: "qa=问答(默认) search=只搜原文 agentic=可联网检索" },
-        },
-        required: ["query"],
-      },
-    },
-    prompt: {
-      name: "pet_symptom_query",
-      when: "宠物症状、疾病、护理问题优先使用，比直接凭模型记忆回答更可靠",
-      priority: 1,
-    },
-  },
+
   {
     definition: {
       name: "rag_query",
@@ -239,17 +291,15 @@ export function buildBuiltinToolDirectoryLines(): string[] {
   }
 
   lines.push("### 优先级规则");
-  lines.push("1. 宠物症状/健康 -> pet_symptom_query");
-  lines.push("2. 通用知识/文档 -> rag_query");
-  lines.push("3. 药品 -> verify_drug");
-  lines.push("4. 图片 -> analyze_pet_image");
-  lines.push("5. 终端/文件 -> exec / read / write");
+  lines.push("1. 通用知识/文档/RAG -> rag_query");
+  lines.push("2. 药品 -> verify_drug");
+  lines.push("3. 图片 -> analyze_pet_image");
+  lines.push("4. 终端/文件 -> exec / read / write");
+  lines.push("5. 多 agent 管理 -> agent_manage");
   lines.push("6. 记忆查询 -> memory_search");
-  lines.push("7. 保存 -> memory");
-  lines.push("8. 紧急症状 -> 不调工具，立即建议就医");
-  lines.push("");
-  lines.push("### 安全边界");
-  lines.push("- 所有工具调用都会被审计记录");
+  lines.push("7. 工具统计 -> tool_stats");
+  lines.push("8. 保存 -> memory");
+  lines.push("9. 紧急症状 -> 不调工具，立即建议就医");
   lines.push("");
   return lines;
 }

@@ -1,4 +1,4 @@
-import type { PetAgent } from "../agent/index.js";
+import type { ThothAgent } from "../agent/index.js";
 import { Logger } from "./logger.js";
 import { MetricsRegistry } from "./metrics.js";
 import { Scheduler } from "./scheduler.js";
@@ -9,7 +9,7 @@ export interface MaintenanceCoordinatorOptions {
   metrics: MetricsRegistry;
   scheduler: Scheduler;
   tracer?: TraceManager;
-  listAgents: () => Array<{ agentId: string; agent: PetAgent }>;
+  listAgents: () => Array<{ agentId: string; agent: ThothAgent }>;
   sessionRetentionCron?: string;
   retrievalCacheCleanupMs?: number;
   memoryFlushMs?: number;
@@ -20,7 +20,7 @@ export class MaintenanceCoordinator {
   private readonly metrics: MetricsRegistry;
   private readonly scheduler: Scheduler;
   private readonly tracer: TraceManager;
-  private readonly listAgents: () => Array<{ agentId: string; agent: PetAgent }>;
+  private readonly listAgents: () => Array<{ agentId: string; agent: ThothAgent }>;
 
   constructor(options: MaintenanceCoordinatorOptions) {
     this.logger = options.logger.child({ component: "maintenance" });
@@ -76,7 +76,7 @@ export class MaintenanceCoordinator {
 
   private async runAcrossAgents(
     jobId: string,
-    run: (entry: { agentId: string; agent: PetAgent }) => Promise<unknown>,
+    run: (entry: { agentId: string; agent: ThothAgent }) => Promise<unknown>,
   ) {
     const agents = this.listAgents();
     this.metrics.setGauge("maintenance_agent_count", agents.length, { job: jobId });
@@ -101,4 +101,3 @@ function sanitizeResult(result: unknown) {
   if (!result || typeof result !== "object") return { value: result };
   return result as Record<string, unknown>;
 }
-

@@ -18,6 +18,7 @@ export class ActionLogStore {
       sessionId: input.sessionId,
       actionType: input.actionType,
       toolName: input.toolName ?? null,
+      step: input.step ?? null,
       resourceType: input.resourceType ?? null,
       resourceId: input.resourceId ?? null,
       inputJson: input.inputJson ? JSON.stringify(input.inputJson) : null,
@@ -31,15 +32,16 @@ export class ActionLogStore {
 
     this.db.prepare(`
       INSERT INTO actions (
-        id, session_id, action_type, tool_name, resource_type, resource_id,
+        id, session_id, action_type, tool_name, step, resource_type, resource_id,
         input_json, output_status, output_summary, artifact_id, approved_by,
         created_at, metadata_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id,
       record.sessionId,
       record.actionType,
       record.toolName ?? null,
+      record.step ?? null,
       record.resourceType ?? null,
       record.resourceId ?? null,
       record.inputJson ?? null,
@@ -57,7 +59,7 @@ export class ActionLogStore {
   async listActions(sessionId: string): Promise<SessionActionRecord[]> {
     const rows = this.db.prepare(`
       SELECT
-        id, session_id, action_type, tool_name, resource_type, resource_id,
+        id, session_id, action_type, tool_name, step, resource_type, resource_id,
         input_json, output_status, output_summary, artifact_id, approved_by,
         created_at, metadata_json
       FROM actions
@@ -70,6 +72,7 @@ export class ActionLogStore {
       sessionId: String(row.session_id),
       actionType: String(row.action_type),
       toolName: (row.tool_name as string | null | undefined) ?? null,
+      step: (row.step as number | null | undefined) ?? null,
       resourceType: (row.resource_type as string | null | undefined) ?? null,
       resourceId: (row.resource_id as string | null | undefined) ?? null,
       inputJson: (row.input_json as string | null | undefined) ?? null,

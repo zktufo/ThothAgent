@@ -13,16 +13,14 @@ export function buildEnvironmentMetadata(sessionId?: string): string {
   const pkg = safeReadJson(path.resolve(process.cwd(), "package.json"));
   const lines: string[] = [
     "===== 运行环境 (Environment) =====",
-    `- Agent: pet-agent v${pkg?.version || "unknown"}`,
+    `- Agent: ThothAgent v${pkg?.version || "unknown"}`,
     `- 运行模式: ${getRuntimeMode()}`,
     `- 操作系统: ${os.type()} ${os.release()} (${os.arch()})`,
     `- Node.js: ${process.version}`,
     `- 项目目录: ${process.cwd()}`,
-    `- 数据目录: ${process.env.HOME || "~"}/.PetAgent`,
+    `- 数据目录: ${process.env.HOME || "~"}/.ThothAgent`,
     `- 会话 ID: ${sessionId || "unknown"}`,
     `- 默认语言: zh-CN`,
-    `- 安全策略: exec 命令沙箱已启用（禁止 rm -rf / sudo / 危险命令）`,
-    `- 读写范围: 项目目录 ~/clawd ~/.PetAgent/workspace /tmp`,
     "",
   ];
   return lines.join("\n");
@@ -102,10 +100,9 @@ export function buildToolDirectory(): string {
  *   2. Environment metadata
  *   3. Skills index
  *   4. Tool directory (concise reference only, full schemas via API `tools` param)
- *   5. Role document (SOUL)
- *   6. Frozen Memory Snapshot
- *   7. Memory rules
- *   8. Response rules
+ *   5. Agent operation manual (AGENTS)
+ *   6. Role document (SOUL)
+ *   7. Frozen Memory Snapshot
  */
 export function buildSystemPrompt(
   toolDirectory: string,
@@ -115,7 +112,7 @@ export function buildSystemPrompt(
   memoryContext?: string,
 ): string {
   const parts: string[] = [
-    "你是一位专业、富有爱心的宠物健康助手——「毛孩子健康顾问」🐾",
+    "你是 ThothAgent，一个通用垂直领域 agent runtime 中的主 agent。",
     "你是一个会主动思考并使用工具的 agent。请遵循 ReAct：先理解问题，再决定是否调用工具，拿到观察结果后再给出最终答复。",
     "",
   ];
@@ -129,13 +126,19 @@ export function buildSystemPrompt(
   // 3. Tool directory (concise reference, not full schemas)
   parts.push(toolDirectory);
 
-  // 4. Home documents
+  // 4. Agent operation manual
+  if (docs.agents) {
+    parts.push("===== Agent Operation Manual (AGENTS.md) =====");
+    parts.push(docs.agents, "");
+  }
+
+  // 5. Role document
   if (docs.soul) {
     parts.push("===== 角色灵魂 (SOUL.md) =====");
     parts.push(docs.soul, "");
   }
 
-  // 5. Frozen Memory Snapshot
+  // 6. Frozen Memory Snapshot
   if (memoryContext) {
     parts.push(
       "===== Frozen Memory Snapshot (预取于本轮开始) ====",
@@ -143,31 +146,6 @@ export function buildSystemPrompt(
       "",
     );
   }
-
-  // 6. Memory rules
-  parts.push(
-    "===== 记忆规则 =====",
-    "- 你拥有内置记忆文件 `MEMORY.md`、`USER.md`、`DOMAIN.md`，它们会在 session 启动时读取并冻结成 snapshot 注入给你",
-    "- 如果用户问「你了解我吗」或类似的回忆性问题，直接引用 Frozen Memory Snapshot 中的内容回答即可，这是你跨会话掌握的信息",
-    "- 不用说你只在当前会话中记得这些，这些信息是持久化的，下次对话仍会加载",
-    "- 发现值得跨会话保留的偏好、经验 -> 使用 `memory` 工具",
-    "- 发现值得跨会话保留的领域知识 -> 也可以使用 `memory` 工具写入 `DOMAIN.md`",
-    "- `memory` 适合保存稳定、长期、高价值的信息，例如用户偏好、反复验证有效的处理经验、长期业务规则、稳定身份信息",
-    "- 临时寒暄、一次性上下文、低信息量短句通常不会进入长期检索记忆，不要为这些内容频繁调用 `memory`",
-    "- 外置长期记忆由当前配置的 memory provider 维护；`memory_search` 会优先通过 provider 的检索能力召回跨会话记忆，而不是假设固定读取某个本地文件",
-    "- 当你希望未来能被 `memory_search` 稳定召回时，应优先把信息整理成明确、可复用、去歧义的长期记忆再调用 `memory`",
-    "- 需要回忆过去对话 -> 使用 `memory_search`（比 `session_search` 优先级高）",
-    "",
-  );
-
-  // 7. Response rules
-  parts.push(
-    "## 回复规则",
-    "- 回复格式友好易读，适当使用 emoji",
-    "- 用药安全红线：人类止痛药/阿司匹林对猫狗有毒",
-    "- 重要信息用**粗体**强调",
-    "- 紧急情况（呼吸困难、严重出血、抽搐）-> 立即建议就医，不要绕弯",
-  );
 
   return parts.join("\n");
 }

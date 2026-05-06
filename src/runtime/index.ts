@@ -11,6 +11,7 @@ import { verifyDrug } from "../tools/index.js";
 import { SessionArchiver, SessionManager } from "../session/index.js";
 import { ToolManager } from "./tool_manager.js";
 import { ModelManager } from "../model_manager/index.js";
+import { FlywheelAnalyzer } from "../evals/FlywheelAnalyzer.js";
 
 export interface TimingPoint {
   label: string;
@@ -71,7 +72,9 @@ export class AgentRuntime {
   readonly tools: ToolManager;
   readonly budget: RuntimeBudgetPolicy;
   readonly modelManager: ModelManager;
+  readonly flywheel: FlywheelAnalyzer;
   lastProviderLabel: string;
+  private readonly sessionHomeDocuments = new Map<string, ReturnType<MemoryStore["getHomeDocuments"]>>();
 
   constructor(options: AgentRuntimeOptions = {}) {
     this.memory = options.memory || new MemoryStore();
@@ -111,6 +114,11 @@ export class AgentRuntime {
     logDaily(`[Skill目录]\n${catalog}`);
     logDaily(`[LLM Route] primary=${modelRoute.primary} fallbacks=${(modelRoute.fallbacks || []).join(", ") || "(none)"}`);
     logDaily(`[LLM Providers] ${this.llmProviders.map((provider) => `${provider.name}:${provider.model}`).join(", ")}`);
+
+    // ── Flywheel: 工具调用飞轮分析（按对话轮数触发） ──
+    const flywheelConfig = FlywheelAnalyzer.loadConfig(this.memory.homePaths.homeRoot);
+    this.flywheel = new FlywheelAnalyzer(flywheelConfig);
+    logDaily(`[Flywheel] 配置载入: enabled=${flywheelConfig.enabled} intervalTurns=${flywheelConfig.analysisIntervalTurns}`);
   }
 
   async runTurn(
@@ -135,6 +143,7 @@ export class AgentRuntime {
     const sessionId = await this.sessions.getCurrentSessionId();
     const recallIntent = /(昨天|昨日|前天|上次|之前|前面|刚才|聊了什么|说到哪|提到过|记得吗|remember|yesterday)/i.test(userInput);
     const turnMemory = await this.memory.manager.onTurnStart(userInput, sessionId);
+    const homeDocuments = this.getHomeDocumentsForSession(sessionId);
     mark("memory_prefetch");
 
         if (this.primaryUsageFraction() >= this.budget.maxUsageFraction) {
@@ -232,9 +241,9 @@ export class AgentRuntime {
         toolsEnabled: false,
         systemPrompt: buildSystemPrompt(
           buildToolDirectory(),
-          buildEnvironmentMetadata(await this.sessions.getCurrentSessionId()),
+          buildEnvironmentMetadata(sessionId),
           buildSkillsIndex(this.skills.listAll()),
-          this.memory.getHomeDocuments(),
+          homeDocuments,
           recallMemoryContext,
         ),
         emitTrace,
@@ -260,9 +269,9 @@ export class AgentRuntime {
     const memorySnapshot = promptInput.includedBlocks.length > 0 ? promptInput.memoryContext : undefined;
     const systemPrompt = buildSystemPrompt(
       buildToolDirectory(),
-      buildEnvironmentMetadata(await this.sessions.getCurrentSessionId()),
+      buildEnvironmentMetadata(sessionId),
       buildSkillsIndex(this.skills.listAll()),
-      this.memory.getHomeDocuments(),
+      homeDocuments,
       memorySnapshot,
     );
     const tools = this.tools.buildLLMTools(imagePath);
@@ -364,9 +373,10 @@ export class AgentRuntime {
             input.context,
             input.systemPrompt,
             input.tools,
-            (toolName, toolInput) => this.tools.execute(toolName, toolInput, {
+            (toolName, toolInput, step) => this.tools.execute(toolName, toolInput, {
               fallbackUserInput: input.userInput,
               imagePath: input.imagePath,
+              step,
             }),
             route.maxToolSteps,
             (event) => {
@@ -446,6 +456,17 @@ export class AgentRuntime {
     const sessionId = await this.sessions.getCurrentSessionId();
     void this.memory.manager.syncTurn(userInput, assistantText, sessionId);
     void this.memory.manager.queuePrefetch(userInput, sessionId);
+
+    // ── Flywheel: 每轮对话结束后触发轮数计数 ──
+    this.flywheel.onTurnComplete(this.sessions.store);
+  }
+
+  private getHomeDocumentsForSession(sessionId: string) {
+    const existing = this.sessionHomeDocuments.get(sessionId);
+    if (existing) return existing;
+    const docs = this.memory.getHomeDocuments();
+    this.sessionHomeDocuments.set(sessionId, docs);
+    return docs;
   }
 
   private async maybeCompactContext(options: { forceCurrentSessionCompaction?: boolean } = {}) {

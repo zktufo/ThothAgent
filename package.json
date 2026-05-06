@@ -1,17 +1,23 @@
 {
   "name": "thoth-agent",
-  "version": "1.0.0",
+  "version": "2026.5.6-beta1",
   "description": "A self-improving framework for domain-specific AI agents with layered memory, adaptive retrieval, and session-aware orchestration.",
   "main": "dist/cli/main.js",
   "type": "module",
   "bin": {
-    "petagent": "bin/petagent.js"
+    "thoth": "bin/thoth.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node --disable-warning=ExperimentalWarning dist/cli/main.js",
     "dev": "tsc && node --disable-warning=ExperimentalWarning dist/cli/main.js",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
     "memory:test": "npm run build && node dist/home/basic_test.js && node dist/model_manager/basic_test.js && node dist/session/basic_test.js && node dist/runtime/basic_test.js && node dist/memory/layered/basic_test.js && node dist/infra/basic_test.js && node dist/gateway/basic_test.js",
     "eval:memory-scale": "npm run build && node dist/evals/memory_scale_benchmark.js",
     "eval:memory-ab": "npm run build && node dist/evals/memory_ab_test.js"

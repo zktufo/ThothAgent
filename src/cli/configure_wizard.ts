@@ -12,7 +12,7 @@ import * as p from "@clack/prompts";
 import { execSync } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
 import { ModelManager } from "../model_manager/index.js";
-import type { PetAgentConfig, ProviderConfig } from "../model_manager/index.js";
+import type { ThothAgentConfig, ProviderConfig } from "../model_manager/index.js";
 import { OAuthDeviceFlow, getOAuthProviderConfig, validateOAuthConfig } from "../oauth/index.js";
 import { PROVIDER_CATALOG, findProviderByKey } from "./providers_catalog.js";
 
@@ -108,7 +108,7 @@ export async function runConfigureWizard(modelManager: ModelManager, agentName: 
 
   const fallbackModels = selectedModels.filter((m) => m !== primaryModel);
 
-  // ─── 保存到 PetAgent.json ─────────────────────────────────
+  // ─── 保存到 ThothAgent.json ───────────────────────────────
   saveProviderConfig(modelManager, entry, credential, selectedModels, primaryModel, fallbackModels);
 
   p.outro(`✅ ${entry.label} 配置完成！主模型: ${primaryModel}`);
@@ -383,7 +383,7 @@ function saveProviderConfig(
     }
   }
 
-  const configObj = config as PetAgentConfig;
+  const configObj = config as ThothAgentConfig;
   configObj.models.providers[entry.key] = providerConfig;
 
   // 更新 agent 的模型路由
@@ -396,7 +396,7 @@ function saveProviderConfig(
   modelManager.saveConfig(configObj);
 }
 
-function ensureAgentRoute(config: PetAgentConfig, agentId: string): NonNullable<PetAgentConfig["agents"]["list"]>[number] {
+function ensureAgentRoute(config: ThothAgentConfig, agentId: string): NonNullable<ThothAgentConfig["agents"]["list"]>[number] {
   config.agents.list = config.agents.list || [];
   let entry = config.agents.list.find((a) => a.id === agentId);
   if (!entry) {
@@ -411,8 +411,8 @@ function ensureAgentRoute(config: PetAgentConfig, agentId: string): NonNullable<
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * petagent configure provider <key> --api-key <key>
- * 非交互式配置 API Key
+ * Legacy helper kept for programmatic callers.
+ * The CLI no longer exposes `thoth configure provider <provider> --api-key <key>`.
  */
 export function configureProviderWithApiKey(
   modelManager: ModelManager,
